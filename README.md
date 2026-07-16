@@ -1,6 +1,7 @@
 # Release Workflows
  
 [![MIT](https://img.shields.io/badge/MIT-gray?logo=github&logoColor=white)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/purpleclay/release-workflows/badge)](https://scorecard.dev/viewer/?uri=github.com/purpleclay/release-workflows)
  
 Reusable release workflows for `purpleclay` projects. Every release built here ships with SLSA Build Level 3 provenance, per-artifact SBOMs, and keyless Sigstore signatures — with no secrets, no key material, and no per-project security plumbing.
  
