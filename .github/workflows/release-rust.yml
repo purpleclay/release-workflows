@@ -1,0 +1,321 @@
+name: release-rust
+on:
+  workflow_call:
+    inputs:
+      bin:
+        description: Name of the binary to build and package
+        type: string
+        required: true
+      targets:
+        description: >-
+          JSON array of Rust target triples, e.g.
+          ["x86_64-unknown-linux-musl","aarch64-apple-darwin"]. Must be a
+          subset of the supported allowlist (see the plan job).
+        type: string
+        required: true
+      toolchain:
+        description: Rust toolchain specifier (stable, 1.89.0, ...)
+        type: string
+        required: false
+        default: stable
+      environment:
+        description: >-
+          GitHub environment the publish job runs under (S11). Referencing a
+          missing environment auto-creates it unprotected — add a required
+          reviewer in each adopting repo to complete the control.
+        type: string
+        required: false
+        default: release
+      package-files:
+        description: >-
+          Space-separated list of extra files bundled into each release
+          archive alongside the binary. Missing files are skipped.
+        type: string
+        required: false
+        default: LICENSE README.md
+    outputs:
+      release-url:
+        description: URL of the published release
+        value: ${{ jobs.provenance.outputs.release-url }}
+
+permissions: {}
+
+env:
+  # Trusted build-tool pins. Bumping these is a release-security change for
+  # every consuming project; treat with the same review weight as code.
+  # Zig's source moved to Codeberg (https://codeberg.org/ziglang/zig), but
+  # release artifacts are still published via ziglang.org/download, so the
+  # setup_zig mirror below is unaffected.
+  ZIG_VERSION: "0.16.0"
+  ZIGBUILD_VERSION: "0.23.0"
+
+jobs:
+  # Validates requested targets against the explicit allowlist and emits the
+  # build matrix. Fails fast on anything unsupported — a trust-root workflow
+  # never guesses a runner or build strategy for an unknown target.
+  plan:
+    name: plan_build_matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: require_tag_ref
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release-rust must be triggered from a tag push (got ref_type='${REF_TYPE}', ref_name='${REF_NAME}'); gh release create --verify-tag needs an existing tag, so non-tag triggers would otherwise fail only after the full build matrix runs"
+            exit 1
+          fi
+
+      - name: compose_build_matrix
+        id: plan
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          if ! matrix=$(jq -c '
+            if type != "array" then
+              error("targets must be a JSON array of strings")
+            elif length == 0 then
+              error("targets must contain at least one target")
+            elif any(.[]; type != "string") then
+              error("targets must contain only strings")
+            elif length != (unique | length) then
+              error("targets must not contain duplicate entries")
+            else . end
+            | [ .[] | . as $t |
+              { target: $t } +
+              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true  },
+                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true  },
+                  "x86_64-apple-darwin":        { "runs-on": "macos-15",     "zigbuild": false },
+                  "aarch64-apple-darwin":       { "runs-on": "macos-15",     "zigbuild": false }
+                }[$t] // error("unsupported target: \($t)") )
+            ]' <<<"$TARGETS"); then
+            echo "::error::release-rust supports: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, x86_64-apple-darwin, aarch64-apple-darwin"
+            exit 1
+          fi
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    name: build / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: rust_toolchain
+        # Explicit toolchain + cross-target install; hand-rolling rustup here
+        # would just reimplement this action with less auditability.
+        # dtolnay/rust-toolchain intentionally ships no tags — master/stable/
+        # beta/nightly are branch aliases by design, so the pin below is the
+        # tip of "master", not a stale reference. Both zizmor findings on
+        # this line are suppressed in .github/zizmor.yml, not inline.
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          # Required: when this action is pinned by SHA the @ref no longer
+          # names a toolchain, so it must be passed explicitly.
+          toolchain: ${{ inputs.toolchain }}
+          targets: ${{ matrix.target }}
+
+      - name: setup_zig
+        if: ${{ matrix.zigbuild }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          use-cache: false
+          # Pin the download source so the egress allowlist stays closed;
+          # the action otherwise walks a randomised mirror list.
+          mirror: https://ziglang.org/download
+
+      - name: install_cargo_zigbuild
+        if: ${{ matrix.zigbuild }}
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          # Prebuilt binary, checksum-verified against install-action's
+          # committed manifest. @version pin is mandatory — bare tool names
+          # float to latest at runtime.
+          tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}
+          checksum: true
+
+      - name: Build (zigbuild)
+        if: ${{ matrix.zigbuild }}
+        env:
+          BIN: ${{ inputs.bin }}
+          TARGET: ${{ matrix.target }}
+        run: cargo zigbuild --locked --release --target "$TARGET" --bin "$BIN"
+
+      - name: Build (native)
+        if: ${{ !matrix.zigbuild }}
+        env:
+          BIN: ${{ inputs.bin }}
+          TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release --target "$TARGET" --bin "$BIN"
+
+      - name: package
+        env:
+          BIN: ${{ inputs.bin }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ github.ref_name }}
+          PACKAGE_FILES: ${{ inputs.package-files }}
+        run: |
+          set -euo pipefail
+          # github.ref_name can contain "/" (e.g. component-scoped tags like
+          # "cli/v1.2.3"). Sanitize before using it in the archive filename so
+          # tar doesn't need intermediate directories under dist/ to exist.
+          version="${VERSION//\//-}"
+          pkg_dir="$(mktemp -d)/${BIN}"
+          mkdir -p "${pkg_dir}" dist
+          cp "target/${TARGET}/release/${BIN}" "${pkg_dir}/"
+          for f in $PACKAGE_FILES; do
+            [ -f "$f" ] || continue
+            if [[ "$(basename "$f")" == "$BIN" ]]; then
+              echo "::error::package file conflicts with binary: $f"
+              exit 1
+            fi
+            cp -- "$f" "${pkg_dir}/"
+          done
+          tar czf "dist/${BIN}-${version}-${TARGET}.tar.gz" -C "${pkg_dir}" .
+
+      - name: upload_archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  provenance:
+    name: attest_and_publish
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write # sigstore keyless signing for build provenance (SLSA L3)
+      attestations: write # publish the provenance attestation to the repo
+      contents: write # create the GitHub release and upload assets
+      # Read-only; needed to enumerate this run's own artifacts so they can
+      # be downloaded by immutable id rather than by (spoofable) name.
+      # Matrix job outputs collapse to a single value, so
+      # needs.build.outputs can't carry every target's artifact-id across.
+      actions: read # list this run's artifacts to resolve their immutable ids
+    outputs:
+      release-url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: collect_artifact_ids
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          # In a reusable workflow, GITHUB_RUN_ID is the *caller's* run, which
+          # may contain artifacts from unrelated jobs (other steps in the same
+          # run, or another concurrent call to this workflow). Only trust
+          # artifacts whose name exactly matches one of this build's own
+          # targets, and require exactly one per target, rather than every
+          # artifact that happens to start with "dist-".
+          mapfile -t targets < <(jq -r '[.[].target] | sort | .[]' <<<"$MATRIX")
+
+          # --slurp folds paginated responses into one array; without it,
+          # a second page would emit a separate JSON document and silently
+          # break the join. Correct even though targets rarely exceed a page.
+          artifacts=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            | jq -c '[.[].artifacts[]]')
+
+          ids=()
+          for target in "${targets[@]}"; do
+            name="dist-${target}"
+            matches=$(jq --arg n "$name" '[.[] | select(.name == $n)]' <<<"$artifacts")
+            count=$(jq 'length' <<<"$matches")
+            if [ "$count" -ne 1 ]; then
+              echo "::error::expected exactly one artifact named '${name}' in this run, found ${count}"
+              exit 1
+            fi
+            ids+=("$(jq -r '.[0].id' <<<"$matches")")
+          done
+
+          IFS=,
+          echo "ids=${ids[*]}" >> "$GITHUB_OUTPUT"
+          unset IFS
+
+      - name: download_archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.artifacts.outputs.ids }}
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- * > checksums.txt
+
+      - name: attest_build_provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          # Deliberately includes checksums.txt: the convenience index is
+          # bound to the same trust chain as the artifacts it lists.
+          subject-path: dist/*
+
+      - name: release_note
+        id: notes
+        uses: purpleclay/release-note-action@025752af8e9dd1c855a7f16343af289fbdcc8f5a # v0.1.0
+
+      - name: publish_release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
+        run: |
+          set -euo pipefail
+          # A prior run of this job may have been interrupted after creating
+          # the release but before (or during) asset upload, leaving a
+          # partial release behind that would make every retry fail on
+          # "release already exists". Delete it first so each run starts
+          # clean. The tag itself belongs to the caller (it's verified to
+          # already exist below via --verify-tag), so only the release
+          # object is removed here, never the tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
+
+          url=$(gh release create "$TAG" dist/* \
+            --title "$TAG" \
+            --notes-file "$NOTE_FILE" \
+            --verify-tag)
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
