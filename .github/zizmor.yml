@@ -1,0 +1,13 @@
+rules:
+  superfluous-actions:
+    ignore:
+      # release-rust.yml:133 — dtolnay/rust-toolchain: explicit toolchain +
+      # cross-target install; hand-rolling rustup here would just reimplement
+      # this action with less auditability.
+      - release-rust.yml:133
+  stale-action-refs:
+    ignore:
+      # release-rust.yml:133 — dtolnay/rust-toolchain intentionally ships no
+      # tags: master/stable/beta/nightly are branch aliases by design, so
+      # this pin is the tip of "master", not a stale reference.
+      - release-rust.yml:133

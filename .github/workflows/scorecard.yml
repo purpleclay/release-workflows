@@ -1,0 +1,49 @@
+name: scorecard
+on:
+  schedule:
+    - cron: "30 4 * * 1" # weekly, Monday 04:30 UTC
+  push:
+    branches:
+      - main
+  branch_protection_rule:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # let scorecard's checks read repo content (e.g. workflow files)
+      security-events: write # upload the SARIF results to code scanning
+      id-token: write # required by scorecard-action for publish_results
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: scorecard_analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # Required: publish_results only pushes to the public OSSF badge API.
+      # Getting results into this repo's own Security tab needs a separate
+      # SARIF upload to code scanning.
+      - name: publish_results
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          sarif_file: results.sarif

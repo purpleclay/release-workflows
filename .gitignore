@@ -1,0 +1,16 @@
+# Ignore everything and selectively allow files
+*
+
+!.envrc
+!.github/workflows/*.yml
+!.github/zizmor.yml
+!.gitignore
+!.zed/settings.json
+!CODE_OF_CONDUCT.md
+!CODEOWNERS
+!flake.lock
+!flake.nix
+!LICENSE
+!README.md
+# Recurse through sub-directories applying the same patterns
+!*/
