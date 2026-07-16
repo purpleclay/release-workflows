@@ -2,6 +2,7 @@
 *
 
 !.envrc
+!.github/renovate.json
 !.github/workflows/*.yml
 !.github/zizmor.yml
 !.gitignore

@@ -45,8 +45,14 @@ env:
   # every consuming project; treat with the same review weight as code.
   # Zig's source moved to Codeberg (https://codeberg.org/ziglang/zig), but
   # release artifacts are still published via ziglang.org/download, so the
-  # setup_zig mirror below is unaffected.
+  # setup_zig mirror below is unaffected. GitHub's mirror of ziglang/zig is
+  # stale (stuck at 0.15.x), so this pin is tracked by the repo-local
+  # Codeberg-aware regex manager in .github/renovate.json rather than the
+  # shared datasource=github-tags pattern used below for ZIGBUILD_VERSION.
+
+  # renovate: depName=ziglang/zig
   ZIG_VERSION: "0.16.0"
+  # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
   ZIGBUILD_VERSION: "0.23.0"
 
 jobs:
@@ -130,7 +136,7 @@ jobs:
         # beta/nightly are branch aliases by design, so the pin below is the
         # tip of "master", not a stale reference. Both zizmor findings on
         # this line are suppressed in .github/zizmor.yml, not inline.
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           # Required: when this action is pinned by SHA the @ref no longer
           # names a toolchain, so it must be passed explicitly.
