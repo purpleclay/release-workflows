@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>purpleclay/renovate-config"],
+  "packageRules": [
+    {
+      "matchFileNames": [".github/workflows/release-rust.yml"],
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "deps"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update ZIG_VERSION from Codeberg — the GitHub mirror of ziglang/zig is stale (stuck at 0.15.x), so this can't use the shared datasource=github-tags manager in regexmatch.json.",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: depName=(?<depName>[\\S]+?)\\s+.+ZIG_VERSION:\\s+[\"']?(?<currentValue>v?[0-9]+\\.[0-9]+\\.[0-9]+)[\"']?"
+      ],
+      "datasourceTemplate": "forgejo-tags",
+      "registryUrlTemplate": "https://codeberg.org"
+    }
+  ]
+}
