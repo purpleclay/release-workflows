@@ -125,7 +125,7 @@ jobs:
           egress-policy: audit
 
       - name: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -234,7 +234,7 @@ jobs:
           egress-policy: audit
 
       - name: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -309,19 +309,28 @@ jobs:
           NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
         run: |
           set -euo pipefail
-          # A prior run of this job may have been interrupted after creating
-          # the release but before (or during) asset upload, leaving a
-          # partial release behind that would make every retry fail on
-          # "release already exists". Delete it first so each run starts
-          # clean. The tag itself belongs to the caller (it's verified to
-          # already exist below via --verify-tag), so only the release
-          # object is removed here, never the tag.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes
+          # gh always exits 1 on failure, whether the release is genuinely
+          # absent, or the check itself failed (auth, network, GitHub API
+          # error). Only the exact "release not found" message confirms
+          # absence; anything else is a real failure and must abort here.
+          #
+          # Immutable releases mean an existing release for this tag can
+          # never be deleted or modified, complete or not — there is no
+          # recovery path here but a new tag (see "Fixing a bad release" in
+          # RELEASE.md). So existence is treated as done, not something to
+          # replace: no delete, ever, on this path. The tag itself belongs
+          # to the caller (verified to exist below via --verify-tag), so
+          # this only ever concerned the release object, never the tag.
+          if view_output=$(gh release view "$TAG" 2>&1 >/dev/null); then
+            echo "release for '$TAG' already exists; nothing to publish"
+            url=$(gh release view "$TAG" --json url --jq '.url')
+          elif [ "$view_output" = "release not found" ]; then
+            url=$(gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --notes-file "$NOTE_FILE" \
+              --verify-tag)
+          else
+            echo "::error::could not confirm whether a release for '$TAG' already exists: $view_output"
+            exit 1
           fi
-
-          url=$(gh release create "$TAG" dist/* \
-            --title "$TAG" \
-            --notes-file "$NOTE_FILE" \
-            --verify-tag)
           echo "url=${url}" >> "$GITHUB_OUTPUT"
