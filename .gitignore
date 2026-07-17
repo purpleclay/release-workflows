@@ -13,5 +13,7 @@
 !flake.nix
 !LICENSE
 !README.md
+!SECURITY.md
+
 # Recurse through sub-directories applying the same patterns
 !*/
