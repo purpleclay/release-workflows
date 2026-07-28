@@ -155,7 +155,7 @@ jobs:
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}
-        uses: taiki-e/install-action@ed67fa35ac944f3a9b33f12c4dd43b6f31a47e20 # v2.83.3
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2.85.3
         with:
           # Prebuilt binary, checksum-verified against install-action's
           # committed manifest. @version pin is mandatory — bare tool names
