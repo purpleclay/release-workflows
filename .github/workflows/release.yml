@@ -1,0 +1,99 @@
+name: release
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: write # create the GitHub release
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: validate_tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The push.tags trigger above is a glob, not a SemVer check —
+          # "v*.*.*" also matches non-numeric tags like "vfoo.bar.baz". Fail
+          # closed here before generating notes or publishing a release.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not a valid release tag; expected vX.Y.Z (see RELEASE.md#versioning)"
+            exit 1
+          fi
+
+      - name: verify_tag_signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # gh release create --verify-tag (below) only checks the tag
+          # exists — it says nothing about who signed it. Only "purpleclay"
+          # is an authorized signer; fetch that key alone into an isolated
+          # keyring so any successful verification can only mean this tag
+          # was signed by them, not just signed by *someone*.
+          export GNUPGHOME
+          GNUPGHOME="$(mktemp -d)"
+          gh api users/purpleclay/gpg_keys --jq '.[].raw_key' | gpg --batch --import
+          if ! git verify-tag "$TAG"; then
+            echo "::error::tag '$TAG' is not signed by an authorized signer (purpleclay)"
+            exit 1
+          fi
+
+      - name: release_note
+        id: notes
+        uses: purpleclay/release-note-action@025752af8e9dd1c855a7f16343af289fbdcc8f5a # v0.1.0
+
+      - name: publish_release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NOTES_FILE: ${{ steps.notes.outputs.release-note-path }}
+        run: |
+          set -euo pipefail
+          # gh always exits 1 on failure, whether the release is genuinely
+          # absent, or the check itself failed (auth, network, GitHub API
+          # error). Only the exact "release not found" message confirms
+          # absence; anything else is a real failure and must abort here.
+          #
+          # Immutable releases mean an existing release for this tag can
+          # never be deleted or modified, complete or not — there is no
+          # recovery path here but a new tag (see "Fixing a bad release" in
+          # RELEASE.md). So existence is treated as done, not something to
+          # replace: no delete, ever, on this path.
+          if view_output=$(gh release view "$TAG" 2>&1 >/dev/null); then
+            echo "release for '$TAG' already exists; nothing to publish"
+            url=$(gh release view "$TAG" --json url --jq '.url')
+          elif [ "$view_output" = "release not found" ]; then
+            url=$(gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file "$NOTES_FILE" \
+              --verify-tag)
+          else
+            echo "::error::could not confirm whether a release for '$TAG' already exists: $view_output"
+            exit 1
+          fi
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
