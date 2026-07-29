@@ -149,9 +149,12 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
-          # Pin the download source so the egress allowlist stays closed;
-          # the action otherwise walks a randomised mirror list.
-          mirror: https://ziglang.org/download
+          # No mirror override: ziglang.org is explicitly disallowed as one
+          # by the action itself (protects the official site from being
+          # hammered by CI). Default behaviour — a randomised community
+          # mirror, falling back to ziglang.org only as a last resort — is
+          # correct here; see #23 for tracking a move to a pinned mirror +
+          # egress-policy: block once we have enough audit data.
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}
