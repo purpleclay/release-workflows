@@ -1,0 +1,5 @@
+[files]
+# A list of third-party hostnames, not prose — spellcheck will keep
+# producing false positives here as mirrors are added/removed over time
+# (e.g. "zig.bcr.ist", "zig.squirl.dev" are real domains, not typos).
+extend-exclude = [".github/zig-mirrors.txt"]
