@@ -67,6 +67,13 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            ziglang.org:443
+
       - name: require_tag_ref
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -84,7 +91,29 @@ jobs:
           TARGETS: ${{ inputs.targets }}
         run: |
           set -euo pipefail
-          if ! matrix=$(jq -c '
+
+          # cargo needs both the registry index and the actual crate-file
+          # host on every leg, plus the toolchain installer — verified
+          # against real harden-runner audit logs, not guessed (see #23).
+          common_endpoints="github.com:443 index.crates.io:443 static.crates.io:443 static.rust-lang.org:443"
+
+          # zigbuild legs additionally need taiki-e/install-action fetching
+          # the cargo-zigbuild binary from GitHub releases, and zig itself.
+          # mlugg/setup-zig picks a mirror at random per run (confirmed:
+          # two real runs picked two different ones), so rather than
+          # allowlisting whichever one we happened to observe, fetch the
+          # complete, authoritative list it draws from and allow all of it,
+          # plus ziglang.org as the documented last-resort fallback.
+          zig_mirrors=$(curl -fsSL https://ziglang.org/download/community-mirrors.txt \
+            | sed -E 's#^https://##; s#/.*$##' \
+            | sed 's/$/:443/' \
+            | tr '\n' ' ')
+          zigbuild_endpoints="${common_endpoints} release-assets.githubusercontent.com:443 ziglang.org:443 ${zig_mirrors}"
+
+          if ! matrix=$(jq -c \
+            --arg common "$common_endpoints" \
+            --arg zigbuild_endpoints "$zigbuild_endpoints" \
+            '
             if type != "array" then
               error("targets must be a JSON array of strings")
             elif length == 0 then
@@ -96,10 +125,10 @@ jobs:
             else . end
             | [ .[] | . as $t |
               { target: $t } +
-              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true  },
-                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true  },
-                  "x86_64-apple-darwin":        { "runs-on": "macos-15",     "zigbuild": false },
-                  "aarch64-apple-darwin":       { "runs-on": "macos-15",     "zigbuild": false }
+              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints },
+                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints },
+                  "x86_64-apple-darwin":        { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common },
+                  "aarch64-apple-darwin":       { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common }
                 }[$t] // error("unsupported target: \($t)") )
             ]' <<<"$TARGETS"); then
             echo "::error::release-rust supports: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, x86_64-apple-darwin, aarch64-apple-darwin"
@@ -120,9 +149,10 @@ jobs:
       contents: read
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: ${{ matrix.allowed-endpoints }}
 
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -166,14 +196,14 @@ jobs:
           tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}
           checksum: true
 
-      - name: Build (zigbuild)
+      - name: build (zigbuild)
         if: ${{ matrix.zigbuild }}
         env:
           BIN: ${{ inputs.bin }}
           TARGET: ${{ matrix.target }}
         run: cargo zigbuild --locked --release --target "$TARGET" --bin "$BIN"
 
-      - name: Build (native)
+      - name: build (native)
         if: ${{ !matrix.zigbuild }}
         env:
           BIN: ${{ inputs.bin }}
@@ -232,9 +262,19 @@ jobs:
       release-url: ${{ steps.publish.outputs.url }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            tmaproduction.blob.core.windows.net:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+            uploads.github.com:443
 
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
