@@ -4,6 +4,8 @@
 !.envrc
 !.github/renovate.json
 !.github/workflows/*.yml
+!.github/zig-mirrors.md
+!.github/zig-mirrors.txt
 !.github/zizmor.yml
 !.gitignore
 !.zed/settings.json
@@ -15,6 +17,7 @@
 !README.md
 !RELEASE.md
 !SECURITY.md
+!typos.toml
 
 # Recurse through sub-directories applying the same patterns
 !*/

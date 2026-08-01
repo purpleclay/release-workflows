@@ -1,0 +1,12 @@
+[files]
+# A list of third-party hostnames, not prose — spellcheck will keep
+# producing false positives here as mirrors are added/removed over time
+# (e.g. "zig.bcr.ist", "zig.squirl.dev" are real domains, not typos).
+extend-exclude = [".github/zig-mirrors.txt"]
+
+[default.extend-words]
+# The same mirror hostnames also appear in release-rust.yml's harden_runner
+# allowed-endpoints (can't be excluded like zig-mirrors.txt above, since
+# that's a real code file). Keep in sync with zig-mirrors.txt.
+ist = "ist"
+squirl = "squirl"

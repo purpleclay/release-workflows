@@ -71,8 +71,49 @@ jobs:
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: block
+          # The reviewed mirror hosts below (all of .github/zig-mirrors.txt)
+          # must be probed for liveness before one can be pinned into the
+          # build matrix (see compose_build_matrix) — this list can't be
+          # derived from that file at runtime, since harden_runner is the
+          # very first step and runs before checkout_release_workflows.
+          # Keep in sync by hand: adding a mirror to zig-mirrors.txt means
+          # adding its host here too, or the probe can never reach it.
           allowed-endpoints: >
+            github.com:443
             ziglang.org:443
+            fs.liujiacai.net:443
+            pkg.earth:443
+            pkg.hexops.org:443
+            zig-mirror.tsimnet.eu:443
+            zig.bcr.ist:443
+            zig.chainsafe.dev:443
+            zig.karearl.com:443
+            zig.linus.dev:443
+            zig.mirror.mschae23.de:443
+            zig.savalione.com:443
+            zig.squirl.dev:443
+            zig.tilok.dev:443
+            zig.vortan.dev:443
+            ziglang.freetls.fastly.net:443
+            zigmirror.com:443
+            zigmirror.hryx.net:443
+
+      - name: checkout_release_workflows
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This reusable workflow's own repo content (the reviewed mirror
+          # list, see #31) — not the caller's, which is what a bare
+          # checkout would default to, and not github.workflow_sha either
+          # (that identifies the *caller's* workflow file, which won't
+          # exist as a commit in this repo at all). job.workflow_repository
+          # + job.workflow_sha are the ones documented for a reusable
+          # workflow checking out its own source.
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/zig-mirrors.txt
+          sparse-checkout-cone-mode: false
 
       - name: require_tag_ref
         env:
@@ -99,20 +140,67 @@ jobs:
 
           # zigbuild legs additionally need taiki-e/install-action fetching
           # the cargo-zigbuild binary from GitHub releases, and zig itself.
-          # mlugg/setup-zig picks a mirror at random per run (confirmed:
-          # two real runs picked two different ones), so rather than
-          # allowlisting whichever one we happened to observe, fetch the
-          # complete, authoritative list it draws from and allow all of it,
-          # plus ziglang.org as the documented last-resort fallback.
-          zig_mirrors=$(curl -fsSL https://ziglang.org/download/community-mirrors.txt \
-            | sed -E 's#^https://##; s#/.*$##' \
-            | sed 's/$/:443/' \
-            | tr '\n' ' ')
-          zigbuild_endpoints="${common_endpoints} release-assets.githubusercontent.com:443 ziglang.org:443 ${zig_mirrors}"
+          # community-mirrors.txt is mutable, externally maintained content,
+          # not something we've reviewed; trusting it directly would let an
+          # upstream compromise silently authorize a new build-time egress
+          # target with no review on our side (#31). Only trust a mirror
+          # that's BOTH currently live upstream AND already reviewed into
+          # .github/zig-mirrors.txt: a mirror going away upstream drops out
+          # with no PR needed; a new one only becomes trusted once someone
+          # reviews and commits it. Compare full base URLs, not just
+          # hostnames — a path change on an already-approved host (e.g. a
+          # hijacked /zig subpath) is exactly the kind of unreviewed change
+          # this is meant to catch, and it would slip through a
+          # hostname-only comparison.
+          live_mirrors=$(curl -fsSL https://ziglang.org/download/community-mirrors.txt \
+            | sed -E 's#/+$##' | sort -u)
+          reviewed_mirrors=$(sed -E 's#/+$##' .github/zig-mirrors.txt | sort -u)
+          approved_mirrors=$(comm -12 <(echo "$live_mirrors") <(echo "$reviewed_mirrors"))
+
+          if [ -z "$approved_mirrors" ]; then
+            echo "::error::no zig mirrors are both live upstream and reviewed in .github/zig-mirrors.txt — the reviewed list has likely gone stale, update it before retrying"
+            exit 1
+          fi
+
+          # Pin one specific, reviewed mirror for setup_zig's `mirror:`
+          # override rather than letting it pick at random from the live
+          # list (which would bypass the review above entirely). Probe
+          # candidates in random order and commit to the first that actually
+          # responds for the exact tarball this run needs: when `mirror:` is
+          # set, setup-zig does not retry or fall back to any other mirror
+          # on failure (confirmed against its source), so pinning one we
+          # haven't confirmed is reachable risks failing the whole leg with
+          # no in-run recovery. Both zigbuild legs run on ubuntu-24.04
+          # runners regardless of the cross-compile target, so there's only
+          # ever one filename to check. Reviewed mirrors serve it flat, at
+          # <base>/<file> — most do NOT mirror ziglang.org/download's own
+          # <base>/<version>/<file> layout, confirmed by probing all of
+          # them (9 of 16 404 with a version segment). HEAD, not a ranged
+          # GET: one reviewed mirror (zigmirror.com) rejects HEAD with 405,
+          # but a ranged GET fails on more (mirrors that ignore Range and
+          # stream the whole ~55MB file, timing out) — HEAD has fewer
+          # false negatives overall across the reviewed set.
+          zig_tarball="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          zig_mirror=""
+          while IFS= read -r candidate; do
+            if curl -fsSL --head --max-time 10 "${candidate}/${zig_tarball}" >/dev/null 2>&1; then
+              zig_mirror="$candidate"
+              break
+            fi
+          done <<<"$(printf '%s\n' "$approved_mirrors" | shuf)"
+
+          if [ -z "$zig_mirror" ]; then
+            echo "::error::none of the approved zig mirrors responded for ${zig_tarball} — check mirror availability or review .github/zig-mirrors.txt"
+            exit 1
+          fi
+
+          zig_mirror_host=$(printf '%s' "$zig_mirror" | sed -E 's#^https://##; s#/.*$##')
+          zigbuild_endpoints="${common_endpoints} release-assets.githubusercontent.com:443 ${zig_mirror_host}:443"
 
           if ! matrix=$(jq -c \
             --arg common "$common_endpoints" \
             --arg zigbuild_endpoints "$zigbuild_endpoints" \
+            --arg zig_mirror "$zig_mirror" \
             '
             if type != "array" then
               error("targets must be a JSON array of strings")
@@ -125,8 +213,8 @@ jobs:
             else . end
             | [ .[] | . as $t |
               { target: $t } +
-              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints },
-                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints },
+              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
+                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
                   "x86_64-apple-darwin":        { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common },
                   "aarch64-apple-darwin":       { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common }
                 }[$t] // error("unsupported target: \($t)") )
@@ -179,12 +267,12 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
-          # No mirror override: ziglang.org is explicitly disallowed as one
-          # by the action itself (protects the official site from being
-          # hammered by CI). Default behaviour — a randomised community
-          # mirror, falling back to ziglang.org only as a last resort — is
-          # correct here; see #23 for tracking a move to a pinned mirror +
-          # egress-policy: block once we have enough audit data.
+          # Pinned to the specific mirror the plan job already probed and
+          # reviewed (#31) — without this, setup-zig fetches the live
+          # community-mirrors.txt itself and picks at random, which neither
+          # this workflow's review process nor its egress allowlist would
+          # ever see.
+          mirror: ${{ matrix.zig-mirror }}
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}

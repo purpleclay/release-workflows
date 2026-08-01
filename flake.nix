@@ -52,6 +52,7 @@
             buildInputs =
               [
                 alejandra
+                minisign
                 nil
                 typos
                 zizmor
