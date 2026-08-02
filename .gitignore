@@ -11,6 +11,7 @@
 !.zed/settings.json
 !CODE_OF_CONDUCT.md
 !CODEOWNERS
+!docs/*.md
 !flake.lock
 !flake.nix
 !LICENSE
