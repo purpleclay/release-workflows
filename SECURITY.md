@@ -8,8 +8,12 @@ are taken seriously and handled with priority.
 ## Reporting a vulnerability
 
 Report privately via GitHub's private vulnerability reporting on this
-repository (Security tab → Report a vulnerability). Do not open a public
-issue or discuss suspected vulnerabilities in pull requests.
+repository:
+
+https://github.com/purpleclay/release-workflows/security/advisories/new
+
+Do not open a public issue or discuss suspected vulnerabilities in pull
+requests.
 
 You can expect an acknowledgement within 48 hours and an assessment within
 7 days. Coordinated disclosure is preferred: a fix is developed privately, a
