@@ -18,6 +18,7 @@ Centralising the release path has a second benefit that has nothing to do with a
 | Workflow                                           | Purpose                                  | Caller contract                              |
 | -------------------------------------------------- | ---------------------------------------- | -------------------------------------------- |
 | [release-rust](.github/workflows/release-rust.yml) | Build, attest, and release Rust binaries | [docs/release-rust.md](docs/release-rust.md) |
+| [release-go](.github/workflows/release-go.yml)     | Build, attest, and release Go binaries   | [docs/release-go.md](docs/release-go.md)     |
 
 The contract documents define everything callers may rely on — usage, inputs, outputs, supported targets, archive naming, attestation subjects, adoption steps, and how to verify what was produced — and change only under the versioning rules in [RELEASE.md](RELEASE.md).
 

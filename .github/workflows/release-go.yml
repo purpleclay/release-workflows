@@ -1,0 +1,456 @@
+name: release-go
+on:
+  workflow_call:
+    inputs:
+      bin:
+        description: Name of the binary to build and package
+        type: string
+        required: true
+      targets:
+        description: >-
+          JSON array of Go platforms as "GOOS/GOARCH" pairs, e.g.
+          ["linux/amd64","darwin/arm64"]. Must be a subset of the supported
+          allowlist (see the plan job).
+        type: string
+        required: true
+      go-version:
+        description: >-
+          Go toolchain version (e.g. 1.25.1). When empty, the version is
+          resolved from the go.mod of the calling repository — the preferred
+          default, since it keeps the release toolchain pinned in the same
+          reviewed file as the code it builds.
+        type: string
+        required: false
+        default: ""
+      cgo:
+        description: >-
+          Enable cgo. Default false: pure-Go cross-compilation lets every
+          target build on one Linux runner. Enabling it moves each target to
+          a native runner (see the plan job) and drops windows/* support.
+        type: boolean
+        required: false
+        default: false
+      package:
+        description: Package path of the main package to build (e.g. ./cmd/nsv)
+        type: string
+        required: false
+        default: "."
+      ldflags:
+        description: >-
+          Linker flags passed to go build. Callers injecting a version should
+          extend this, e.g. "-s -w -X main.version=${{ github.ref_name }}".
+        type: string
+        required: false
+        default: "-s -w"
+      environment:
+        description: >-
+          GitHub environment the publish job runs under (S11). Referencing a
+          missing environment auto-creates it unprotected — add a required
+          reviewer in each adopting repo to complete the control.
+        type: string
+        required: false
+        default: release
+      package-files:
+        description: >-
+          Space-separated list of extra files bundled into each release
+          archive alongside the binary. Missing files are skipped.
+        type: string
+        required: false
+        default: LICENSE README.md
+    outputs:
+      release-url:
+        description: URL of the published release
+        value: ${{ jobs.provenance.outputs.release-url }}
+
+permissions: {}
+
+jobs:
+  # Validates requested targets against the explicit allowlist and emits the
+  # build matrix. Fails fast on anything unsupported — a trust-root workflow
+  # never guesses a runner or build strategy for an unknown target. Unlike
+  # release-rust there is no mirror probing here: the Go toolchain and module
+  # proxy are single, first-party distribution points, so this job needs no
+  # checkout and makes no egress of its own.
+  plan:
+    name: plan_build_matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: harden_runner
+        # AUDIT MODE (bootstrap): collect real egress before authoring block
+        # rules — same process as release-rust #23, where the final lists
+        # were taken from audit logs, not guessed. This job is expected to
+        # show no egress beyond the harden-runner agent itself; once the
+        # insights confirm that, flip to egress-policy: block with an empty
+        # (or agent-only) allowlist.
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: require_tag_ref
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release-go must be triggered from a tag push (got ref_type='${REF_TYPE}', ref_name='${REF_NAME}'); gh release create --verify-tag needs an existing tag, so non-tag triggers would otherwise fail only after the full build matrix runs"
+            exit 1
+          fi
+
+      - name: compose_build_matrix
+        id: plan
+        env:
+          TARGETS: ${{ inputs.targets }}
+          CGO: ${{ inputs.cgo }}
+        run: |
+          set -euo pipefail
+
+          # Two runner maps, keyed on cgo:
+          #
+          # cgo=false — every target cross-compiles from a single Linux
+          # runner. The Go toolchain ships its own cross backends, so no
+          # external cross toolchain (and none of release-rust's zig mirror
+          # machinery) is needed.
+          #
+          # cgo=true — each target must build where a native C toolchain
+          # exists. linux/arm64 uses ubuntu-24.04-arm (free for public
+          # repos only — private repos would need a larger-runner label).
+          # Both darwin targets build on macos-15: Apple clang is a
+          # universal cross-arch compiler, so darwin/amd64 with cgo works
+          # from the arm64 runner. windows/* with cgo is deliberately
+          # unsupported — it would require a mingw toolchain this workflow
+          # has no reviewed provisioning path for.
+          if ! matrix=$(jq -c --argjson cgo "$CGO" '
+            def meta($t):
+              ($t | split("/")) as $p |
+              { goos: $p[0],
+                goarch: $p[1],
+                ext: (if $p[0] == "windows" then ".exe" else "" end),
+                archive: (if $p[0] == "windows" then "zip" else "tar.gz" end) };
+
+            def runner($t):
+              if $cgo then
+                { "linux/amd64":  "ubuntu-24.04",
+                  "linux/arm64":  "ubuntu-24.04-arm",
+                  "darwin/amd64": "macos-15",
+                  "darwin/arm64": "macos-15"
+                }[$t] // error("unsupported target with cgo enabled: \($t)")
+              else
+                { "linux/amd64":   "ubuntu-24.04",
+                  "linux/arm64":   "ubuntu-24.04",
+                  "darwin/amd64":  "ubuntu-24.04",
+                  "darwin/arm64":  "ubuntu-24.04",
+                  "windows/amd64": "ubuntu-24.04",
+                  "windows/arm64": "ubuntu-24.04"
+                }[$t] // error("unsupported target: \($t)")
+              end;
+
+            if type != "array" then
+              error("targets must be a JSON array of strings")
+            elif length == 0 then
+              error("targets must contain at least one target")
+            elif any(.[]; type != "string") then
+              error("targets must contain only strings")
+            elif length != (unique | length) then
+              error("targets must not contain duplicate entries")
+            else . end
+            | [ .[] | . as $t |
+                { target: $t, "runs-on": runner($t) } + meta($t) ]
+            ' <<<"$TARGETS"); then
+            echo "::error::release-go supports: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64 (windows targets require cgo disabled)"
+            exit 1
+          fi
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    name: build / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: harden_runner
+        # AUDIT MODE (bootstrap). Candidate endpoints to confirm against the
+        # audit insights before flipping to block:
+        #   github.com:443                            checkout + setup-go manifest
+        #   release-assets.githubusercontent.com:443  setup-go toolchain download
+        #   objects.githubusercontent.com:443         setup-go fallback asset host
+        #   proxy.golang.org:443                      module downloads
+        #   sum.golang.org:443                        checksum database
+        #   storage.googleapis.com:443                proxy/sumdb backing store
+        # Treat this list as a hypothesis, not a rule set — the actual block
+        # allowlist must come from observed traffic, per release-rust #23.
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cache: false on both variants — a release build must never restore a
+      # mutable cache another workflow populated; cache poisoning would sit
+      # below everything this workflow attests to.
+      - name: setup_go (from go.mod)
+        if: ${{ inputs.go-version == '' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: setup_go (explicit)
+        if: ${{ inputs.go-version != '' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+
+      - name: verify_modules
+        # GOTOOLCHAIN=local prevents the go command from silently fetching a
+        # different (unpinned) toolchain when go.mod carries a newer
+        # `toolchain` directive — a mismatch fails loudly here instead of
+        # introducing an unreviewed download. go mod verify checks every
+        # downloaded module against go.sum, making sumdb verification an
+        # explicit, visible gate rather than an implicit side effect of the
+        # build.
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+
+      - name: build
+        env:
+          GOTOOLCHAIN: local
+          BIN: ${{ inputs.bin }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # Explicit on every leg, both ways: Go silently flips cgo off when
+          # GOOS/GOARCH differ from the host, so relying on defaults would
+          # make the input a no-op on exactly the legs where it matters.
+          CGO_ENABLED: ${{ inputs.cgo && '1' || '0' }}
+          EXT: ${{ matrix.ext }}
+          PACKAGE: ${{ inputs.package }}
+          LDFLAGS: ${{ inputs.ldflags }}
+        # -trimpath strips runner-local paths from the binary for
+        # reproducibility across runs. ldflags is caller-controlled, but the
+        # caller already controls the source being built, so this is not a
+        # trust-boundary crossing; passing it via env keeps it out of shell
+        # interpolation regardless.
+        run: |
+          set -euo pipefail
+          mkdir -p build-out
+          go build -trimpath -ldflags "$LDFLAGS" -o "build-out/${BIN}${EXT}" "$PACKAGE"
+
+      - name: package
+        env:
+          BIN: ${{ inputs.bin }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXT: ${{ matrix.ext }}
+          ARCHIVE: ${{ matrix.archive }}
+          VERSION: ${{ github.ref_name }}
+          PACKAGE_FILES: ${{ inputs.package-files }}
+        run: |
+          set -euo pipefail
+          # github.ref_name can contain "/" (e.g. component-scoped tags like
+          # "cli/v1.2.3"). Sanitize before using it in the archive filename.
+          version="${VERSION//\//-}"
+          pkg_dir="$(mktemp -d)/${BIN}"
+          mkdir -p "${pkg_dir}" dist
+          cp "build-out/${BIN}${EXT}" "${pkg_dir}/"
+          # Flattened into one directory, so two package-files with the same
+          # basename (e.g. from different source directories) would silently
+          # overwrite each other; track basenames seen so far and fail loudly
+          # instead. Plain indexed array, not `declare -A`: darwin/* legs run
+          # on macos-15, whose default `bash` is the system-shipped 3.2,
+          # which has no associative arrays.
+          seen_basenames=()
+          for f in $PACKAGE_FILES; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            if [[ "$base" == "${BIN}${EXT}" ]]; then
+              echo "::error::package file conflicts with binary: $f"
+              exit 1
+            fi
+            for seen in "${seen_basenames[@]:-}"; do
+              if [[ -n "$seen" && "$seen" == "$base" ]]; then
+                echo "::error::package files collide on basename '${base}': $f"
+                exit 1
+              fi
+            done
+            seen_basenames+=("$base")
+            cp -- "$f" "${pkg_dir}/"
+          done
+          # zip for windows follows the platform's unpacking convention;
+          # tar.gz everywhere else. Both tools are preinstalled on the
+          # ubuntu and macos hosted images.
+          if [ "$ARCHIVE" = "zip" ]; then
+            (cd "${pkg_dir}" && zip -qr "${OLDPWD}/dist/${BIN}-${version}-${GOOS}-${GOARCH}.zip" .)
+          else
+            tar czf "dist/${BIN}-${version}-${GOOS}-${GOARCH}.tar.gz" -C "${pkg_dir}" .
+          fi
+
+      - name: upload_archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # "/" is not a legal artifact-name character, so the artifact key
+          # uses goos-goarch; collect_artifact_ids derives the same form
+          # from the matrix when matching by exact name. Prefixed with `bin`
+          # so two calls to this workflow in the same caller run (e.g.
+          # building two binaries) can't collide on an overlapping target.
+          name: dist-${{ inputs.bin }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  provenance:
+    name: attest_and_publish
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write # sigstore keyless signing for build provenance (SLSA L3)
+      attestations: write # publish the provenance attestation to the repo
+      contents: write # create the GitHub release and upload assets
+      # Read-only; needed to enumerate this run's own artifacts so they can
+      # be downloaded by immutable id rather than by (spoofable) name.
+      # Matrix job outputs collapse to a single value, so
+      # needs.build.outputs can't carry every target's artifact-id across.
+      actions: read # list this run's artifacts to resolve their immutable ids
+    outputs:
+      release-url: ${{ steps.publish.outputs.url }}
+    steps:
+      - name: harden_runner
+        # AUDIT MODE (bootstrap). This job's tooling is identical to
+        # release-rust's provenance job, so its verified block allowlist is
+        # the expected end state and is carried below as the hypothesis to
+        # confirm before flipping to block:
+        #   api.github.com:443
+        #   fulcio.sigstore.dev:443
+        #   github.com:443
+        #   rekor.sigstore.dev:443
+        #   release-assets.githubusercontent.com:443
+        #   tmaproduction.blob.core.windows.net:443
+        #   tuf-repo-cdn.sigstore.dev:443
+        #   tuf-repo.github.com:443
+        #   uploads.github.com:443
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: collect_artifact_ids
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+          BIN: ${{ inputs.bin }}
+        run: |
+          set -euo pipefail
+          # In a reusable workflow, GITHUB_RUN_ID is the *caller's* run, which
+          # may contain artifacts from unrelated jobs (other steps in the same
+          # run, or another concurrent call to this workflow — including a
+          # second call to this same workflow building a different `bin`).
+          # Only trust artifacts whose name exactly matches one of this
+          # build's own bin+target combinations, and require exactly one per
+          # target, rather than every artifact that happens to start with
+          # "dist-".
+          mapfile -t names < <(jq -r --arg bin "$BIN" '[.[].target | "dist-" + $bin + "-" + sub("/"; "-")] | sort | .[]' <<<"$MATRIX")
+
+          # --slurp folds paginated responses into one array; without it,
+          # a second page would emit a separate JSON document and silently
+          # break the join. Correct even though targets rarely exceed a page.
+          artifacts=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            | jq -c '[.[].artifacts[]]')
+
+          ids=()
+          for name in "${names[@]}"; do
+            matches=$(jq --arg n "$name" '[.[] | select(.name == $n)]' <<<"$artifacts")
+            count=$(jq 'length' <<<"$matches")
+            if [ "$count" -ne 1 ]; then
+              echo "::error::expected exactly one artifact named '${name}' in this run, found ${count}"
+              exit 1
+            fi
+            ids+=("$(jq -r '.[0].id' <<<"$matches")")
+          done
+
+          IFS=,
+          echo "ids=${ids[*]}" >> "$GITHUB_OUTPUT"
+          unset IFS
+
+      - name: download_archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.artifacts.outputs.ids }}
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- * > checksums.txt
+
+      - name: attest_build_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          # Deliberately includes checksums.txt: the convenience index is
+          # bound to the same trust chain as the artifacts it lists.
+          subject-path: dist/*
+
+      - name: release_note
+        id: notes
+        uses: purpleclay/release-note-action@9fa4adcdc68af9a0630f8d64fae6e38e31c259f7 # v0.2.0
+
+      - name: publish_release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
+        run: |
+          set -euo pipefail
+          # gh always exits 1 on failure, whether the release is genuinely
+          # absent, or the check itself failed (auth, network, GitHub API
+          # error). Only the exact "release not found" message confirms
+          # absence; anything else is a real failure and must abort here.
+          #
+          # Immutable releases mean an existing release for this tag can
+          # never be deleted or modified, complete or not — there is no
+          # recovery path here but a new tag (see "Fixing a bad release" in
+          # RELEASE.md). So existence is treated as done, not something to
+          # replace: no delete, ever, on this path. The tag itself belongs
+          # to the caller (verified to exist below via --verify-tag), so
+          # this only ever concerned the release object, never the tag.
+          if view_output=$(gh release view "$TAG" 2>&1 >/dev/null); then
+            echo "release for '$TAG' already exists; nothing to publish"
+            url=$(gh release view "$TAG" --json url --jq '.url')
+          elif [ "$view_output" = "release not found" ]; then
+            url=$(gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --notes-file "$NOTE_FILE" \
+              --verify-tag)
+          else
+            echo "::error::could not confirm whether a release for '$TAG' already exists: $view_output"
+            exit 1
+          fi
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
