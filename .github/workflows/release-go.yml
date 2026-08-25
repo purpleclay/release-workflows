@@ -38,7 +38,11 @@ on:
       ldflags:
         description: >-
           Linker flags passed to go build. Callers injecting a version should
-          extend this, e.g. "-s -w -X main.version=${{ github.ref_name }}".
+          extend this, e.g. "-s -w -X main.version=" followed by the release
+          tag (github.ref_name in the caller's own workflow). Avoid writing a
+          literal expression here: GitHub evaluates ${ }-style syntax
+          anywhere in this file, including this description, where the
+          github context isn't in scope.
         type: string
         required: false
         default: "-s -w"
