@@ -68,7 +68,8 @@ with:
   environment:
 
   # Extra files bundled into each archive. Missing files are skipped; a
-  # file whose basename equals `bin` fails.
+  # file whose basename equals `bin`, or two files that share a basename,
+  # fails.
   # Optional. Default is "LICENSE README.md"
   package-files:
 ```
@@ -114,7 +115,7 @@ For each target: `<bin>-<version>-<goos>-<goarch>.<archive>` containing the bina
 - **Version resolution defaults to `go.mod`**: leave `go-version` empty to keep the release toolchain pinned in the same reviewed file as the code it builds; set it explicitly to override.
 - **Version is not embedded automatically**: the archive and checksum names are derived entirely from the tag (`github.ref_name`), not from anything compiled into the binary. If your build should embed a version, extend `ldflags`, e.g. `"-s -w -X main.version=${{ github.ref_name }}"`.
 - **`cgo` changes the trust surface, not just the runner**: `cgo: false` (default) builds every target on one Linux runner using Go's own cross-compiler backends — no external cross toolchain is involved. `cgo: true` moves each target to a runner with a native C toolchain and drops `windows/*` entirely, since this workflow has no reviewed mingw provisioning path.
-- **One release per tag, ever.** Re-running the workflow against a tag that already has a published release is a no-op: it exits successfully and returns the existing release's URL without publishing the newly built assets. Immutable releases mean nothing can repair or replace that release in place — fix-forward with a new tag.
+- **One release per tag, ever.** Re-running the workflow against a tag that already has a published release still performs the build and provenance jobs, but the publish step returns the existing release's URL without replacing its assets. Failures before that step still fail the workflow. Immutable releases mean nothing can repair or replace that release in place — fix-forward with a new tag.
 - **Dependencies are pinned centrally** (all actions) and bumped via reviewed `fix(deps)` patch releases — callers inherit them by bumping their pinned SHA, normally via Renovate.
 
 ## Verifying what it produced

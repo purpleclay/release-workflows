@@ -54,7 +54,8 @@ with:
   environment:
 
   # Extra files bundled into each archive. Missing files are skipped; a
-  # file whose basename equals `bin` fails.
+  # file whose basename equals `bin`, or two files that share a basename,
+  # fails.
   # Optional. Default is "LICENSE README.md"
   package-files:
 ```
@@ -84,7 +85,7 @@ For each target: `<bin>-<version>-<target>.tar.gz` containing the binary plus `p
 
 - **Builds are clean-room**: no caches are used in the release path. Release builds are slower than CI builds; that is the price of the integrity claim.
 - **Checkout is shallow** in the build job: build scripts must not derive version information from git history (vergen-style `git describe`). The archive and checksum names are derived entirely from the tag (`github.ref_name`), not from `Cargo.toml` or `CARGO_PKG_VERSION` — if your build embeds a version at compile time, keep it in sync with the release tag yourself.
-- **One release per tag, ever.** Re-running the workflow against a tag that already has a published release fails. Fix-forward with a new tag.
+- **One release per tag, ever.** Re-running the workflow against a tag that already has a published release still performs the build and provenance jobs, but the publish step returns the existing release's URL without replacing its assets. Failures before that step still fail the workflow. Immutable releases mean nothing can repair or replace that release in place — fix-forward with a new tag.
 - **Dependencies are pinned centrally** (Zig, cargo-zigbuild, all actions) and bumped via reviewed `fix(deps)` patch releases — callers inherit them by bumping their pinned SHA, normally via Renovate.
 
 ## Verifying what it produced
