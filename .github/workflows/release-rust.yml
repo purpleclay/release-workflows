@@ -313,12 +313,27 @@ jobs:
           pkg_dir="$(mktemp -d)/${BIN}"
           mkdir -p "${pkg_dir}" dist
           cp "target/${TARGET}/release/${BIN}" "${pkg_dir}/"
+          # Flattened into one directory, so two package-files with the same
+          # basename (e.g. from different source directories) would silently
+          # overwrite each other; track basenames seen so far and fail loudly
+          # instead. Plain indexed array, not `declare -A`: the darwin legs
+          # run on macos-15, whose default `bash` is the system-shipped 3.2,
+          # which has no associative arrays.
+          seen_basenames=()
           for f in $PACKAGE_FILES; do
             [ -f "$f" ] || continue
-            if [[ "$(basename "$f")" == "$BIN" ]]; then
+            base="$(basename "$f")"
+            if [[ "$base" == "$BIN" ]]; then
               echo "::error::package file conflicts with binary: $f"
               exit 1
             fi
+            for seen in "${seen_basenames[@]:-}"; do
+              if [[ -n "$seen" && "$seen" == "$base" ]]; then
+                echo "::error::package files collide on basename '${base}': $f"
+                exit 1
+              fi
+            done
+            seen_basenames+=("$base")
             cp -- "$f" "${pkg_dir}/"
           done
           tar czf "dist/${BIN}-${version}-${TARGET}.tar.gz" -C "${pkg_dir}" .
@@ -326,7 +341,10 @@ jobs:
       - name: upload_archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist-${{ matrix.target }}
+          # Prefixed with `bin` so two calls to this workflow in the same
+          # caller run (e.g. building two binaries) can't collide on an
+          # overlapping target; collect_artifact_ids derives the same form.
+          name: dist-${{ inputs.bin }}-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
           retention-days: 1
@@ -375,14 +393,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
+          BIN: ${{ inputs.bin }}
         run: |
           set -euo pipefail
           # In a reusable workflow, GITHUB_RUN_ID is the *caller's* run, which
           # may contain artifacts from unrelated jobs (other steps in the same
-          # run, or another concurrent call to this workflow). Only trust
-          # artifacts whose name exactly matches one of this build's own
-          # targets, and require exactly one per target, rather than every
-          # artifact that happens to start with "dist-".
+          # run, or another concurrent call to this workflow — including a
+          # second call to this same workflow building a different `bin`).
+          # Only trust artifacts whose name exactly matches one of this
+          # build's own bin+target combinations, and require exactly one per
+          # target, rather than every artifact that happens to start with
+          # "dist-".
           mapfile -t targets < <(jq -r '[.[].target] | sort | .[]' <<<"$MATRIX")
 
           # --slurp folds paginated responses into one array; without it,
@@ -394,7 +415,7 @@ jobs:
 
           ids=()
           for target in "${targets[@]}"; do
-            name="dist-${target}"
+            name="dist-${BIN}-${target}"
             matches=$(jq --arg n "$name" '[.[] | select(.name == $n)]' <<<"$artifacts")
             count=$(jq 'length' <<<"$matches")
             if [ "$count" -ne 1 ]; then
