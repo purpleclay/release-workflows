@@ -53,7 +53,7 @@ env:
   # renovate: depName=ziglang/zig
   ZIG_VERSION: "0.16.0"
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
-  ZIGBUILD_VERSION: "0.23.2"
+  ZIGBUILD_VERSION: "0.23.4"
 
 jobs:
   # Validates requested targets against the explicit allowlist and emits the
