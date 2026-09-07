@@ -90,7 +90,7 @@ jobs:
         # show no egress beyond the harden-runner agent itself; once the
         # insights confirm that, flip to egress-policy: block with an empty
         # (or agent-only) allowlist.
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -193,7 +193,7 @@ jobs:
         #   storage.googleapis.com:443                proxy/sumdb backing store
         # Treat this list as a hypothesis, not a rule set — the actual block
         # allowlist must come from observed traffic, per release-rust #23.
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
@@ -351,7 +351,7 @@ jobs:
         #   tuf-repo-cdn.sigstore.dev:443
         #   tuf-repo.github.com:443
         #   uploads.github.com:443
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
