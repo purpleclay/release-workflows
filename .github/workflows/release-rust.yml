@@ -54,6 +54,10 @@ env:
   ZIG_VERSION: "0.16.0"
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
   ZIGBUILD_VERSION: "0.23.4"
+  # renovate: datasource=github-releases depName=anchore/syft
+  SYFT_VERSION: "v1.51.1"
+  # renovate: datasource=github-tags depName=rust-secure-code/cargo-auditable versioning=semver
+  CARGO_AUDITABLE_VERSION: "0.7.5"
 
 jobs:
   # Validates requested targets against the explicit allowlist and emits the
@@ -136,7 +140,11 @@ jobs:
           # cargo needs both the registry index and the actual crate-file
           # host on every leg, plus the toolchain installer — verified
           # against real harden-runner audit logs, not guessed (see #23).
-          common_endpoints="github.com:443 index.crates.io:443 static.crates.io:443 static.rust-lang.org:443"
+          # api.github.com/raw.githubusercontent.com/release-assets.
+          # githubusercontent.com cover taiki-e/install-action (now needed
+          # on every leg for cargo-auditable, not just zigbuild legs) and
+          # anchore/sbom-action's Syft installer, unconditional in build.
+          common_endpoints="github.com:443 index.crates.io:443 static.crates.io:443 static.rust-lang.org:443 api.github.com:443 raw.githubusercontent.com:443 release-assets.githubusercontent.com:443"
 
           # zigbuild legs additionally need taiki-e/install-action fetching
           # the cargo-zigbuild binary from GitHub releases, and zig itself.
@@ -195,7 +203,7 @@ jobs:
           fi
 
           zig_mirror_host=$(printf '%s' "$zig_mirror" | sed -E 's#^https://##; s#/.*$##')
-          zigbuild_endpoints="${common_endpoints} release-assets.githubusercontent.com:443 ${zig_mirror_host}:443"
+          zigbuild_endpoints="${common_endpoints} ${zig_mirror_host}:443"
 
           if ! matrix=$(jq -c \
             --arg common "$common_endpoints" \
@@ -261,6 +269,15 @@ jobs:
           toolchain: ${{ inputs.toolchain }}
           targets: ${{ matrix.target }}
 
+      - name: install_cargo_auditable
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        with:
+          # Needed on every leg, zigbuild and native alike — both build
+          # paths get wrapped so Syft's cargo-auditable-binary-cataloger has
+          # embedded dependency data to read.
+          tool: cargo-auditable@${{ env.CARGO_AUDITABLE_VERSION }}
+          checksum: true
+
       - name: setup_zig
         if: ${{ matrix.zigbuild }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -289,16 +306,22 @@ jobs:
         env:
           BIN: ${{ inputs.bin }}
           TARGET: ${{ matrix.target }}
-        run: cargo zigbuild --locked --release --target "$TARGET" --bin "$BIN"
+        # Argument order is load-bearing: `cargo auditable zigbuild` embeds
+        # dependency data correctly, but `cargo zigbuild auditable` silently
+        # produces a binary with none (confirmed by a cargo-auditable
+        # maintainer, rust-secure-code/cargo-auditable#179 — the wrapper
+        # must come first).
+        run: cargo auditable zigbuild --locked --release --target "$TARGET" --bin "$BIN"
 
       - name: build (native)
         if: ${{ !matrix.zigbuild }}
         env:
           BIN: ${{ inputs.bin }}
           TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release --target "$TARGET" --bin "$BIN"
+        run: cargo auditable build --locked --release --target "$TARGET" --bin "$BIN"
 
       - name: package
+        id: package
         env:
           BIN: ${{ inputs.bin }}
           TARGET: ${{ matrix.target }}
@@ -336,7 +359,84 @@ jobs:
             seen_basenames+=("$base")
             cp -- "$f" "${pkg_dir}/"
           done
-          tar czf "dist/${BIN}-${version}-${TARGET}.tar.gz" -C "${pkg_dir}" .
+          asset="${BIN}-${version}-${TARGET}.tar.gz"
+          tar czf "dist/${asset}" -C "${pkg_dir}" .
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      # file:, not path: — a binary scan, not a Cargo.lock/source-tree scan,
+      # so Syft's cargo-auditable-binary-cataloger reads the dependency data
+      # cargo auditable embedded above (dev/build-only dependencies never
+      # linked into this binary correctly do not appear — dependency.kinds
+      # for this cataloger is [runtime] only, verified against Syft's own
+      # capabilities.yaml and a local spike, same property already relied
+      # on for Go). upload-artifact/upload-release-assets: false — dist/ ->
+      # upload_archive -> attest_sbom is the only path an SBOM should
+      # travel.
+      - name: generate_sbom
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          file: target/${{ matrix.target }}/release/${{ inputs.bin }}
+          format: spdx-json
+          output-file: dist/${{ steps.package.outputs.asset }}.spdx.json
+          syft-version: ${{ env.SYFT_VERSION }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: patch_sbom
+        env:
+          BIN: ${{ inputs.bin }}
+          OUTPUT_PATH: dist/${{ steps.package.outputs.asset }}.spdx.json
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # cargo-auditable's own audit data has a first-class `root: bool`
+          # marker for the main package, but Syft's rust cataloger drops it
+          # on the way into its model (confirmed against Syft's own
+          # syft/pkg/cataloger/rust/package.go, and empirically: no
+          # primaryPackagePurpose/documentDescribes signal survives into the
+          # SPDX output) — no more reliable selector exists. Resolve the
+          # crate owning $BIN via cargo metadata rather than assuming crate
+          # name == bin name: a [[bin]] name can differ from [package] name,
+          # especially in a workspace.
+          crate_name=$(cargo metadata --no-deps --locked --format-version=1 \
+            | jq -r --arg bin "$BIN" '
+                [.packages[] | select(.targets[] | .kind[]? == "bin" and .name == $bin) | .name]
+                | if length != 1 then error("expected exactly one package owning bin target \($bin), found \(length)") else .[0] end')
+
+          comment="Generated from the compiled binary (post-build) via Syft's cargo-auditable-binary-cataloger, not a Cargo.lock/source-tree scan."
+
+          # Version is always overwritten with $VERSION, not left as
+          # whatever Cargo.toml declares: this workflow already treats the
+          # release tag as authoritative for archive/checksum naming (see
+          # "Checkout is shallow" in docs/release-rust.md) — Cargo.toml's
+          # version is not guaranteed to be kept in lockstep with it.
+          #
+          # The primaryPackagePurpose != "FILE" guard excludes the SPDX
+          # document's own scanned-file entry, whose `name` is the binary's
+          # filename — confirmed empirically to collide with $crate whenever
+          # a project has no custom [[bin]] name (the common case: cargo
+          # names the output binary after the package by default), which
+          # would otherwise make "exactly one" fail on a real crate with no
+          # ambiguity at all.
+          if ! jq \
+            --arg crate "$crate_name" \
+            --arg version "$VERSION" \
+            --arg comment "$comment" '
+              ([.packages[] | select(.name == $crate and (.primaryPackagePurpose // "") != "FILE")] | length) as $count
+              | if $count != 1 then
+                  error("expected exactly one package named \($crate) in SBOM, found \($count)")
+                else . end
+              | .packages |= map(
+                  if .name == $crate and (.primaryPackagePurpose // "") != "FILE"
+                  then .versionInfo = $version
+                  else . end
+                )
+              | .creationInfo.comment = $comment
+            ' "$OUTPUT_PATH" > "${OUTPUT_PATH}.tmp"; then
+            echo "::error::failed to post-process SBOM at $OUTPUT_PATH"
+            exit 1
+          fi
+          mv "${OUTPUT_PATH}.tmp" "$OUTPUT_PATH"
 
       - name: upload_archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -349,9 +449,104 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # One actions/attest call per target, in a separate job from build (not an
+  # extra step in build's matrix): attest_sbom is gated by the same
+  # environment as provenance, and folding it into build would move that
+  # required-reviewer approval to before compilation, once per target,
+  # instead of once after every build succeeds. actions/attest's sbom-path
+  # binds exactly one SBOM document per call — each target has its own
+  # distinct SBOM, so this can't be batched into provenance's single
+  # glob-based attest_build_provenance call the way build-provenance is.
+  attest_sbom:
+    name: attest_sbom / ${{ matrix.target }}
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write # sigstore keyless signing for SBOM attestation (SLSA L3)
+      attestations: write # publish the SBOM attestation to the repo
+      # Read-only; needed to enumerate this run's own artifacts so this
+      # leg's archive+SBOM can be downloaded by immutable id rather than by
+      # (spoofable) name. No contents: write — this job never touches the
+      # release.
+      actions: read # list this run's artifacts to resolve their immutable ids
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+
+      # No checkout: nothing in this job touches repo files, and it has no
+      # contents: permission.
+
+      - name: resolve_artifact_id
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BIN: ${{ inputs.bin }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # Same immutable-id-by-exact-name lookup as provenance's
+          # collect_artifact_ids, scoped to this matrix leg's one artifact.
+          name="dist-${BIN}-${TARGET}"
+          artifacts=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            | jq -c '[.[].artifacts[]]')
+          matches=$(jq --arg n "$name" '[.[] | select(.name == $n)]' <<<"$artifacts")
+          count=$(jq 'length' <<<"$matches")
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one artifact named '${name}' in this run, found ${count}"
+            exit 1
+          fi
+          echo "id=$(jq -r '.[0].id' <<<"$matches")" >> "$GITHUB_OUTPUT"
+
+      - name: download_archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.artifact.outputs.id }}
+          path: dist
+
+      - name: locate_subject
+        id: locate
+        run: |
+          set -euo pipefail
+          # Resolved by globbing-and-asserting-exactly-one rather than
+          # recomputing the filename template a third time: job outputs from
+          # a matrixed job collapse to a single value, so needs.build.outputs
+          # can't carry this leg's exact filename across (same limitation
+          # provenance's own collect_artifact_ids comment documents).
+          mapfile -t archives < <(compgen -G "dist/*.tar.gz")
+          mapfile -t sboms < <(compgen -G "dist/*.spdx.json")
+          if [ "${#archives[@]}" -ne 1 ] || [ "${#sboms[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one archive and one .spdx.json in this leg's artifact, found ${#archives[@]} archive(s) and ${#sboms[@]} sbom(s)"
+            exit 1
+          fi
+          echo "archive=${archives[0]}" >> "$GITHUB_OUTPUT"
+          echo "sbom=${sboms[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: attest_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.locate.outputs.archive }}
+          sbom-path: ${{ steps.locate.outputs.sbom }}
+
   provenance:
     name: attest_and_publish
-    needs: [plan, build]
+    # Publishing must never happen unless every target's SBOM attestation
+    # already succeeded — releases are immutable and can't be fixed in
+    # place, so this trades one sequential stage of latency for that
+    # guarantee.
+    needs: [plan, build, attest_sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
@@ -445,8 +640,10 @@ jobs:
       - name: attest_build_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          # Deliberately includes checksums.txt: the convenience index is
-          # bound to the same trust chain as the artifacts it lists.
+          # Deliberately includes checksums.txt and every *.spdx.json:
+          # "every asset" is bound to the same build-provenance trust chain,
+          # in addition to each SBOM's own dedicated attestation from
+          # attest_sbom.
           subject-path: dist/*
 
       - name: release_note
