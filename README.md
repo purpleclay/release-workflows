@@ -3,7 +3,7 @@
 [![MIT](https://img.shields.io/badge/MIT-gray?logo=github&logoColor=white)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/purpleclay/release-workflows/badge)](https://scorecard.dev/viewer/?uri=github.com/purpleclay/release-workflows)
 
-Reusable release workflows for projects. Every release built here ships with SLSA Build Level 3 provenance and keyless Sigstore signatures — no per-project secrets or signing-key management. Go releases also ship a per-binary, attested SPDX SBOM; the same for Rust is on the roadmap.
+Reusable release workflows for projects. Every release built here ships with SLSA Build Level 3 provenance and keyless Sigstore signatures — no per-project secrets or signing-key management. Go and Rust releases also ship a per-binary, attested SPDX SBOM.
 
 ## Why this repository exists
 
