@@ -251,7 +251,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: install_cargo_auditable
-        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
         with:
           # Needed on every leg, zigbuild and native alike — both build
           # paths get wrapped so Syft's cargo-auditable-binary-cataloger has
@@ -274,7 +274,7 @@ jobs:
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}
-        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
         with:
           # Prebuilt binary, checksum-verified against install-action's
           # committed manifest. @version pin is mandatory — bare tool names
