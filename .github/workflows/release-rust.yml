@@ -57,7 +57,7 @@ env:
   # renovate: datasource=github-releases depName=anchore/syft
   SYFT_VERSION: "v1.51.1"
   # renovate: datasource=github-tags depName=rust-secure-code/cargo-auditable versioning=semver
-  CARGO_AUDITABLE_VERSION: "0.7.5"
+  CARGO_AUDITABLE_VERSION: "0.7.6"
 
 jobs:
   # Validates requested targets against the explicit allowlist and emits the
