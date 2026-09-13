@@ -54,6 +54,7 @@
                 alejandra
                 minisign
                 nil
+                osv-scanner
                 syft
                 typos
                 zizmor
