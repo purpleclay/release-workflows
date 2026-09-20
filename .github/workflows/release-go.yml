@@ -70,7 +70,7 @@ permissions: {}
 
 env:
   # renovate: datasource=github-releases depName=anchore/syft
-  SYFT_VERSION: "v1.51.1"
+  SYFT_VERSION: "v1.52.0"
 
 jobs:
   # Validates requested targets against the explicit allowlist and emits the
