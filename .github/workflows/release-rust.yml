@@ -65,7 +65,7 @@ jobs:
   # never guesses a runner or build strategy for an unknown target.
   plan:
     name: plan_build_matrix
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -430,7 +430,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment: ${{ inputs.environment }}
     permissions:
@@ -513,7 +513,7 @@ jobs:
     # place, so this trades one sequential stage of latency for that
     # guarantee.
     needs: [plan, build, attest_sbom]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
     permissions:
