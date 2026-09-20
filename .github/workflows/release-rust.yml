@@ -55,7 +55,7 @@ env:
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
   ZIGBUILD_VERSION: "0.23.4"
   # renovate: datasource=github-releases depName=anchore/syft
-  SYFT_VERSION: "v1.51.1"
+  SYFT_VERSION: "v1.52.0"
   # renovate: datasource=github-tags depName=rust-secure-code/cargo-auditable versioning=semver
   CARGO_AUDITABLE_VERSION: "0.7.6"
 
