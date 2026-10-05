@@ -51,7 +51,7 @@ env:
   # shared datasource=github-tags pattern used below for ZIGBUILD_VERSION.
 
   # renovate: depName=ziglang/zig
-  ZIG_VERSION: "0.16.0"
+  ZIG_VERSION: "0.17.0"
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
   ZIGBUILD_VERSION: "0.23.4"
   # renovate: datasource=github-releases depName=anchore/syft
