@@ -179,11 +179,12 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-    # One output per supported target, so downstream jobs download exactly
-    # the artifact each leg uploaded rather than whatever matches a name in
-    # the caller's run. Each leg writes only its own key, and GitHub combines
-    # distinct keys across matrix legs. Keys use goos-goarch because "/" isn't
-    # valid in an output name. Keep in sync with plan's target map.
+    # Per-target outputs: the id of the artifact each leg uploaded, so
+    # downstream jobs download exactly that rather than whatever matches a
+    # name in the caller's run, and the build inputs each leg resolved. Each
+    # leg writes only its own keys, and GitHub combines distinct keys across
+    # matrix legs. Keys use goos-goarch because "/" isn't valid in an output
+    # name. Keep in sync with plan's target map.
     outputs:
       artifact-id-linux-amd64: ${{ steps.report.outputs.artifact-id-linux-amd64 }}
       artifact-id-linux-arm64: ${{ steps.report.outputs.artifact-id-linux-arm64 }}
@@ -191,6 +192,12 @@ jobs:
       artifact-id-darwin-arm64: ${{ steps.report.outputs.artifact-id-darwin-arm64 }}
       artifact-id-windows-amd64: ${{ steps.report.outputs.artifact-id-windows-amd64 }}
       artifact-id-windows-arm64: ${{ steps.report.outputs.artifact-id-windows-arm64 }}
+      build-inputs-linux-amd64: ${{ steps.record.outputs.build-inputs-linux-amd64 }}
+      build-inputs-linux-arm64: ${{ steps.record.outputs.build-inputs-linux-arm64 }}
+      build-inputs-darwin-amd64: ${{ steps.record.outputs.build-inputs-darwin-amd64 }}
+      build-inputs-darwin-arm64: ${{ steps.record.outputs.build-inputs-darwin-arm64 }}
+      build-inputs-windows-amd64: ${{ steps.record.outputs.build-inputs-windows-amd64 }}
+      build-inputs-windows-arm64: ${{ steps.record.outputs.build-inputs-windows-arm64 }}
     steps:
       - name: harden_runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -224,6 +231,21 @@ jobs:
         with:
           go-version: ${{ inputs.go-version }}
           cache: false
+
+      - name: record_build_inputs
+        id: record
+        env:
+          GOTOOLCHAIN: local
+          KEY: ${{ matrix.goos }}-${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          facts=$(jq -cn \
+            --arg image "$ImageOS" \
+            --arg image_version "$ImageVersion" \
+            --arg arch "$RUNNER_ARCH" \
+            --arg go "$(go version)" \
+            '{runner: {image: $image, "image-version": $image_version, arch: $arch}, go: $go}')
+          printf 'build-inputs-%s=%s\n' "$KEY" "$facts" >> "$GITHUB_OUTPUT"
 
       - name: verify_modules
         # GOTOOLCHAIN=local prevents the go command from silently fetching a
@@ -508,6 +530,29 @@ jobs:
             ] | join(",")' <<<"$MATRIX")
           echo "ids=${ids}" >> "$GITHUB_OUTPUT"
 
+      # Written outside dist/ so it isn't published or attested as an asset.
+      - name: compose_build_inputs
+        id: build_inputs
+        env:
+          INPUTS: ${{ toJSON(inputs) }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+          BUILD_OUTPUTS: ${{ toJSON(needs.build.outputs) }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/build-inputs.json"
+          jq -n \
+            --argjson inputs "$INPUTS" \
+            --argjson matrix "$MATRIX" \
+            --argjson outputs "$BUILD_OUTPUTS" \
+            --arg syft "$SYFT_VERSION" '
+            { inputs: $inputs,
+              tools: { syft: $syft },
+              targets: (reduce $matrix[] as $m ({};
+                .[$m.target] = (
+                  $outputs["build-inputs-" + ($m.target | sub("/"; "-"))] // ""
+                  | if . == "" then error("build reported no inputs for \($m.target)") else fromjson end))) }' > "$path"
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
+
       - name: download_archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -529,6 +574,13 @@ jobs:
           # in addition to each SBOM's own dedicated attestation from
           # attest_sbom.
           subject-path: dist/*
+
+      - name: attest_build_inputs
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+          predicate-type: https://github.com/purpleclay/release-workflows/build-inputs/v1
+          predicate-path: ${{ steps.build_inputs.outputs.path }}
 
       - name: release_note
         id: notes

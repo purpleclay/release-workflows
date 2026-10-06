@@ -18,6 +18,15 @@
       ],
       "datasourceTemplate": "forgejo-tags",
       "registryUrlTemplate": "https://codeberg.org"
+    },
+    {
+      "customType": "regex",
+      "description": "Update build runner labels the plan job writes into the build matrix. They sit inside jq strings, which the github-actions manager can't see.",
+      "managerFilePatterns": ["/^\\.github/workflows/release-(go|rust)\\.yml$/"],
+      "matchStrings": [
+        "\"(?<depName>ubuntu|macos)-(?<currentValue>[0-9]+(?:\\.[0-9]+)?)(?:-arm)?\""
+      ],
+      "datasourceTemplate": "github-runners"
     }
   ]
 }
