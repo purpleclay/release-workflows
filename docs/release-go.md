@@ -18,7 +18,6 @@ jobs:
       id-token: write # OIDC identity for Sigstore signing
       attestations: write # persist attestations
       contents: write # create the release, upload assets
-      actions: read # list this run's artifacts to resolve their immutable ids
     uses: purpleclay/release-workflows/.github/workflows/release-go.yml@<pinned-sha> # vX.Y.Z
     with:
       bin: nsv
