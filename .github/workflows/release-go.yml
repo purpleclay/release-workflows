@@ -582,6 +582,33 @@ jobs:
           predicate-type: https://github.com/purpleclay/release-workflows/build-inputs/v1
           predicate-path: ${{ steps.build_inputs.outputs.path }}
 
+      # Runs the documented verify commands against every asset before the
+      # release exists, because an immutable release can't be fixed after.
+      - name: verify_attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/release-go.yml
+          SIGNER_DIGEST: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          verify() {
+            gh attestation verify "$1" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" \
+              --signer-digest "$SIGNER_DIGEST" \
+              --source-ref "$GITHUB_REF" \
+              --deny-self-hosted-runners \
+              "${@:2}"
+          }
+          for asset in dist/*; do
+            verify "$asset"
+            verify "$asset" --predicate-type https://github.com/purpleclay/release-workflows/build-inputs/v1
+          done
+          for archive in dist/*.tar.gz dist/*.zip; do
+            verify "$archive" --predicate-type https://spdx.dev/Document
+          done
+
       - name: release_note
         id: notes
         uses: purpleclay/release-note-action@173903da3997acebdb2c04f3de707c7c4c1a283e # v0.3.1

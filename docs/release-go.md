@@ -123,16 +123,19 @@ For each target: `<bin>-<version>-<goos>-<goarch>.<archive>` containing the bina
 ```sh
 gh attestation verify <artifact>.tar.gz \
   --repo purpleclay/<project> \
-  --signer-workflow purpleclay/release-workflows/.github/workflows/release-go.yml
+  --signer-workflow purpleclay/release-workflows/.github/workflows/release-go.yml \
+  --source-ref refs/tags/<tag> \
+  --deny-self-hosted-runners
 ```
 
-The `--signer-workflow` check is the SLSA Build L3 claim: the signing identity belongs to this reusable workflow, which the calling repository invokes but cannot edit.
+The `--signer-workflow` check is the SLSA Build L3 claim: the signing identity belongs to this reusable workflow, which the calling repository invokes but cannot edit. `--source-ref` ties the asset to the release tag, and `--deny-self-hosted-runners` rejects anything not built on a GitHub-hosted runner. To also pin the exact revision of this workflow, add `--signer-digest <sha>` with the commit SHA your caller pins. These flags need a recent `gh`.
 
 To verify an asset's SBOM attestation specifically:
 
 ```sh
 gh attestation verify <artifact>.tar.gz \
   --repo purpleclay/<project> \
+  --signer-workflow purpleclay/release-workflows/.github/workflows/release-go.yml \
   --predicate-type https://spdx.dev/Document
 ```
 
@@ -145,6 +148,8 @@ gh attestation verify <artifact>.tar.gz \
   --predicate-type https://github.com/purpleclay/release-workflows/build-inputs/v1 \
   --format json --jq '.[0].verificationResult.statement.predicate'
 ```
+
+Before publishing, the release job runs these commands itself: provenance and build inputs for every asset, and the SBOM for every archive. It adds `--source-ref`, `--deny-self-hosted-runners` and `--signer-digest` to each check.
 
 ## Adoption checklist
 
