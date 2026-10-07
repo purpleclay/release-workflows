@@ -1,93 +1,57 @@
 # Releasing
 
-Releases of this repository are deliberately low-tech: a human creates a
-tag, and a tag-triggered workflow generates the release note and publishes
-an asset-free GitHub release. There is nothing to build — reusable workflows
-ship as source, consumed at a git ref — so the integrity story is git-native:
-the tag ruleset, signed tags, immutable releases, and this documented process.
+Releases of this repository are deliberately low-tech: a human pushes a signed tag, and a tag-triggered workflow generates the release note and publishes an asset-free GitHub release. Reusable workflows ship as source, consumed at a git ref, so the integrity story is git-native: the tag ruleset, signed tags, immutable releases, and this process.
 
 ## Versioning
 
-Tags are `vX.Y.Z` (v-prefixed, Actions ecosystem convention — unlike the
-bare semver used by purpleclay binary projects). Semver tracks **the caller
-interface**, not upstream dependency versions:
+Tags are `vX.Y.Z`, following the Actions convention rather than the bare semver purpleclay binary projects use. Semver tracks **the caller interface**, not upstream dependency versions:
 
-- **Major** — renamed/removed inputs or outputs; changes to archive naming
-  or layout (installers parse these); changes to attestation subjects or
-  predicate types (verification commands depend on these); any *increase*
-  in the permissions callers must grant; dropping a supported target.
-- **Minor** — new inputs with defaults, new outputs, new supported targets,
-  new workflows.
-- **Patch** — dependency bumps (Renovate lands these as `fix(deps)`),
-  internal hardening, documentation.
+- **Major**: renamed or removed inputs or outputs; changes to archive naming or layout, which installers parse; changing or removing an attestation subject or predicate type, which verification commands rely on; any *increase* in the permissions callers must grant; dropping a supported target.
+- **Minor**: new inputs with defaults, new outputs, new supported targets, new workflows, new attestations or predicate types, and any *decrease* in the permissions callers must grant.
+- **Patch**: dependency bumps (Renovate lands these as `fix(deps)`), internal hardening, documentation.
 
-An upstream dependency's major bump that leaves the caller interface
-untouched is still a **patch** here. Review is where that judgement is made:
-if a bump leaks caller-visible behaviour, escalate the commit type manually.
+An upstream major bump that leaves the caller interface untouched is still a **patch**. Review is where that call is made: if a bump changes anything callers can see, raise the commit type by hand.
 
-There are **no floating major tags** (`v1` does not move). Consumers pin
-full commit SHAs with the version as a trailing comment; Renovate proposes
-bumps and embeds these release notes in the PR — write them for that reader.
+There are **no floating major tags** (`v1` does not move). Consumers pin full commit SHAs with the version as a trailing comment. Renovate proposes bumps and embeds these release notes in the PR, so write them for that reader.
 
 ## Cutting a release
 
-Tag creation is intentionally manual. Binary projects in the org automate
-tagging with `nsv`; this repo keeps a human in the loop because every
-release changes release security for every downstream project, and volume
-is low. Revisit if that frequency ever makes the manual step a bottleneck.
+Tagging is manual. Binary projects automate it with `nsv`, but every release here changes release security for every downstream project, and volume is low, so a human stays in the loop.
 
-1. Confirm main is green (ci, scorecard) and every merged-but-unreleased
-   change is accounted for:
+1. Confirm `main` is green (ci, scorecard) and every change since the last tag is accounted for:
 
    ```sh
-   last_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
-   git log "${last_tag:+$last_tag..}main" --oneline
+   git log "$(git describe --tags --abbrev=0)..main" --oneline
    ```
 
-   (`git describe` fails outright before the first release ever cuts — the
-   fallback above lists full history instead of erroring in that case.)
-
    > [!NOTE]
-   > Consumers only discover updates through tags — a merged-but-untagged
-   > fix, even a security-relevant one, is invisible to every downstream
-   > project until it's released. If this check surprises you, you're not
-   > tagging often enough.
+   > Consumers only see changes once they're tagged. A merged but untagged fix, even a security fix, reaches no downstream project.
 
-2. Create a signed, annotated tag locally and push it:
+2. Create a signed, annotated tag and push it:
 
    ```sh
    git tag -s vX.Y.Z -m "chore: release for vX.Y.Z"
+   git verify-tag vX.Y.Z
    git push origin vX.Y.Z
    ```
 
-   The tag must be signed with the `purpleclay` key specifically — the
-   workflow's only authorized signer (see step 3) — not just signed by
-   anyone. Check before pushing: `git verify-tag vX.Y.Z`. Tag creation is
-   restricted by ruleset to maintainers; the push is the release decision.
-3. The `release` workflow triggers on the tag. It checks two different
-   things, not one: that the tag is signed by an authorized signer (`git
-   verify-tag` against a known key — this is what step 2's signature
-   actually buys you), and separately, that the tag exists (`--verify-tag`
-   on `gh release create` — existence only, it doesn't check who signed it
-   or whether it was signed at all). It then generates the release note
-   (release-note-action, provenance-verified binary) and publishes the
-   release. No assets, by design.
-4. Verify: the release exists, notes render correctly, and the tag/release
-   are locked (immutable releases).
+   The tag must be signed with the `purpleclay` key, the only signer the workflow accepts. Tag creation is restricted to maintainers by ruleset, so the push is the release decision.
+
+3. The `release` workflow then:
+   - rejects any tag that isn't exactly `vX.Y.Z`
+   - verifies the tag's signature against the `purpleclay` GPG key
+   - generates the release note with release-note-action
+   - creates the release with `gh release create --verify-tag`, which only confirms the tag exists
+
+   The release has no assets, by design.
+
+4. Check the release exists, the notes render, and the release shows as immutable.
 
 ## Fixing a bad release
 
 > [!WARNING]
-> Never by mutation. A broken release is followed by a fixed patch release;
-> the bad tag stays (immutable releases prevent deleting or re-pointing it,
-> deliberately).
+> Never by changing it. Immutable releases can't be edited, deleted, or re-pointed, so a bad release is followed by a fixed patch release under a new tag.
 
-This applies just as much if the *publish itself* fails partway (for
-example, `release-rust.yml` interrupted mid-asset-upload) as it does to a
-release with a content bug. Immutable releases mean the workflow can't
-delete or repair an existing release either way — it treats any existing
-release for a tag as done, full stop. A stuck partial release isn't
-recovered; it's abandoned the same as any other bad release, via a new tag.
+The same applies when a caller's publish fails partway, for example `release-rust.yml` interrupted mid-upload: the workflow treats any existing release for a tag as done, so the only recovery is a new tag.
 
-If the defect is security-relevant, follow `SECURITY.md` and publish an
-advisory alongside the fix.
+If the defect is security-relevant, follow [SECURITY.md](SECURITY.md) and publish an advisory alongside the fix.

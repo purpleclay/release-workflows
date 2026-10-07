@@ -1,5 +1,5 @@
 {
-  description = "Reusable release workflows for purpleclay projects — SLSA Build L3 provenance, SBOM attestation, and keyless Sigstore signing";
+  description = "Reusable release workflows for purpleclay projects: SLSA Build L3 provenance, attested SBOMs, and keyless Sigstore signing.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";

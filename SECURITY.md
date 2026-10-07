@@ -1,60 +1,35 @@
 # Security Policy
 
-This repository is the release trust root for the `purpleclay` organisation:
-its workflows build, attest, and publish the artifacts other projects ship.
-A vulnerability here potentially affects every downstream release, so reports
-are taken seriously and handled with priority.
+This repository is the release trust root for purpleclay projects: its workflows build, attest, and publish what those projects ship. A vulnerability here can affect every downstream release, so reports are handled with priority.
 
 ## Reporting a vulnerability
 
-Report privately via GitHub's private vulnerability reporting on this
-repository:
+Report privately through GitHub's private vulnerability reporting:
 
 https://github.com/purpleclay/release-workflows/security/advisories/new
 
-Do not open a public issue or discuss suspected vulnerabilities in pull
-requests.
+Don't open a public issue or discuss a suspected vulnerability in a pull request.
 
-You can expect an acknowledgement within 48 hours and an assessment within
-7 days. Coordinated disclosure is preferred: a fix is developed privately, a
-patched release is tagged, a security advisory is published crediting the
-reporter (unless you'd rather not be named), and consuming repositories are
-bumped via Renovate.
+Expect an acknowledgement within 48 hours and an assessment within 7 days. Disclosure is coordinated: the fix is developed privately, a patched release is tagged, an advisory is published crediting you (unless you'd rather not be named), and consuming repositories are bumped via Renovate.
 
-## What counts as a vulnerability here
+## What counts as a vulnerability
 
-Anything that weakens the guarantees these workflows exist to provide:
+Anything that weakens the guarantees these workflows provide:
 
-- Forging, bypassing, or weakening build provenance — e.g. a way for a
-  calling repository's build steps to influence attestation subjects, or to
-  obtain the signing identity of these workflows.
-- Artifact tampering between build and publish — e.g. defeating the
-  immutable-artifact-id handoff or the checksum coverage.
-- Injection through caller-controlled inputs (`bin`, `targets`,
-  `package-files`, tag names) into shell, filenames, or release content.
-- Egress or cache weaknesses that permit poisoning of the release build.
-- Vulnerable or compromised pinned dependencies (actions, Zig, cargo-zigbuild)
-  where the pinned version is affected.
+- Forging, bypassing, or weakening provenance, for example letting a caller's build steps influence attestation subjects or reach the signing identity.
+- Swapping or tampering with an artifact between build and attestation.
+- Injection through caller-controlled inputs or tag names into shell commands, filenames, or release content.
+- Egress or cache weaknesses that allow the release build to be poisoned.
+- A pinned action or build tool affected by a known vulnerability or compromise.
 
-Hardening suggestions that don't cross the line into exploitability are
-welcome too — open a regular issue for those.
+Hardening suggestions that aren't exploitable are welcome as regular issues.
 
 ## Supported versions
 
-Only the latest tagged release receives fixes. Consumers pin full commit
-SHAs and are expected to track new releases via Renovate; a security fix is
-delivered as a new patch release, never by mutating an existing tag or
-release (releases here are immutable by policy and by repository setting).
+Only the latest release receives fixes. Consumers pin full commit SHAs and track new releases via Renovate. A security fix ships as a new patch release, never by changing an existing tag or release.
 
 ## Verifying what you consume
 
-Every artifact produced by these workflows carries verifiable provenance:
+Every artifact these workflows produce carries verifiable provenance. The commands are in each workflow's contract: [release-rust](docs/release-rust.md#verifying-what-it-produced) and [release-go](docs/release-go.md#verifying-what-it-produced).
 
-```sh
-gh attestation verify <artifact> \
-  --repo purpleclay/<project> \
-  --signer-workflow purpleclay/release-workflows/.github/workflows/release-rust.yml
-```
-
-If verification fails on an artifact claiming to come from this pipeline,
-treat that as a security report in itself.
+If an artifact claiming to come from this pipeline fails verification, treat that as a security report in itself.

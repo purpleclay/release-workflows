@@ -24,7 +24,7 @@ jobs:
       targets: '["linux/amd64","linux/arm64","darwin/amd64","darwin/arm64"]'
 ```
 
-Must be triggered from a **tag push**; the workflow fails fast otherwise. Tags are `v`-prefixed here, unlike [release-rust](release-rust.md): the Go module proxy and `go install pkg@version` resolve versions from `vX.Y.Z` tags, so a bare-semver tag would break module resolution for any caller that's also `go install`-able.
+Must be triggered from a **tag push**; the workflow fails fast otherwise. Use `v`-prefixed tags, unlike [release-rust](release-rust.md): the Go module proxy and `go install pkg@version` resolve versions from `vX.Y.Z` tags, so a bare-semver tag breaks `go install` for your module. The workflow itself accepts any tag.
 
 ## Inputs
 
@@ -42,13 +42,13 @@ with:
   # Required.
   targets:
 
-  # Go toolchain version (e.g. 1.25.1). When empty, the version is resolved
-  # from the go.mod of the calling repository.
+  # Go version to build with, e.g. 1.25.1. Empty uses the version in go.mod.
   # Optional. Default is "" (resolve from go.mod)
   go-version:
 
-  # Enable cgo. Cross-compiles from a single Linux runner when false; moves
-  # each target to a native runner and drops windows/* support when true.
+  # Enable cgo. When off, every target cross-compiles on one Linux runner.
+  # When on, each target builds on a native Linux or macOS runner, and
+  # windows targets are unsupported.
   # Optional. Default is false
   cgo:
 
@@ -56,19 +56,20 @@ with:
   # Optional. Default is "."
   package:
 
-  # Linker flags passed to go build.
+  # Linker flags passed to go build. To embed the version, extend the
+  # default, e.g. "-s -w -X main.version=<tag>".
   # Optional. Default is "-s -w"
   ldflags:
 
-  # GitHub environment for the attest/publish job. Auto-created unprotected
-  # on first reference — add a required reviewer per repo to complete the
-  # S11 control.
+  # GitHub environment the attest and publish jobs run under. GitHub creates
+  # a missing environment without protection, so add a required reviewer in
+  # each repo.
   # Optional. Default is release
   environment:
 
-  # Extra files bundled into each archive. Missing files are skipped; a
-  # file whose basename equals `bin`, or two files that share a basename,
-  # fails.
+  # Extra files, relative to the repository root, bundled into each archive.
+  # Missing files are skipped. A file whose basename equals `bin`, or two
+  # files that share a basename, fail the build.
   # Optional. Default is "LICENSE README.md"
   package-files:
 ```
@@ -85,38 +86,52 @@ With `cgo: false` (default), every target cross-compiles from a single Linux run
 
 | Target          | Runner       | Build                  |
 | --------------- | ------------ | ---------------------- |
-| `linux/amd64`   | ubuntu-24.04 | native cross (pure Go) |
-| `linux/arm64`   | ubuntu-24.04 | native cross (pure Go) |
-| `darwin/amd64`  | ubuntu-24.04 | native cross (pure Go) |
-| `darwin/arm64`  | ubuntu-24.04 | native cross (pure Go) |
-| `windows/amd64` | ubuntu-24.04 | native cross (pure Go) |
-| `windows/arm64` | ubuntu-24.04 | native cross (pure Go) |
+| `linux/amd64`   | ubuntu-26.04 | native cross (pure Go) |
+| `linux/arm64`   | ubuntu-26.04 | native cross (pure Go) |
+| `darwin/amd64`  | ubuntu-26.04 | native cross (pure Go) |
+| `darwin/arm64`  | ubuntu-26.04 | native cross (pure Go) |
+| `windows/amd64` | ubuntu-26.04 | native cross (pure Go) |
+| `windows/arm64` | ubuntu-26.04 | native cross (pure Go) |
 
 With `cgo: true`, each target moves to a runner with a native C toolchain, and `windows/*` is unsupported:
 
 | Target         | Runner           | Build                               |
 | -------------- | ---------------- | ----------------------------------- |
-| `linux/amd64`  | ubuntu-24.04     | native cgo                          |
-| `linux/arm64`  | ubuntu-24.04-arm | native cgo                          |
-| `darwin/amd64` | macos-15         | native cgo (Apple clang cross-arch) |
-| `darwin/arm64` | macos-15         | native cgo                          |
+| `linux/amd64`  | ubuntu-26.04     | native cgo                          |
+| `linux/arm64`  | ubuntu-26.04-arm | native cgo                          |
+| `darwin/amd64` | macos-26         | native cgo (Apple clang cross-arch) |
+| `darwin/arm64` | macos-26         | native cgo                          |
 
 Adding a target is a minor version; removing one is a major.
 
 ## What a release contains
 
-For each target: `<bin>-<version>-<goos>-<goarch>.<archive>` containing the binary plus `package-files`, where `<version>` is the tag name with `/` replaced by `-`, and `<archive>` is `zip` for `windows/*` targets and `tar.gz` for everything else. Alongside each archive, a sibling `<archive>.spdx.json` — an SPDX SBOM generated from that target's compiled binary (not a source-tree scan of `go.mod`), with its own dedicated attestation binding it to that archive's digest. Plus `checksums.txt` (SHA-256 over each release asset — archives and SBOMs alike; generated before it exists, so it does not hash itself). Every asset — checksums.txt and every `.spdx.json` included — is also a subject of the SLSA build provenance attestation signed by this workflow's identity, and of a [build inputs attestation](build-inputs.md) recording the inputs and toolchain each target was built with. Release notes are generated by release-note from conventional commits. The archive naming and attestation subjects are contract: parsers (installers, download actions) may rely on them.
+For each target:
+
+- `<bin>-<version>-<goos>-<goarch>.<ext>`: the binary plus `package-files`, where `<version>` is the tag with `/` replaced by `-`, and `<ext>` is `zip` for `windows/*` targets and `tar.gz` for everything else.
+- `<archive>.spdx.json`: an SPDX SBOM read from the compiled binary, not from `go.mod`.
+
+For the release:
+
+- `checksums.txt`: SHA-256 of every other asset.
+- Release notes, generated by release-note from conventional commits.
+
+Attestations, all signed by this workflow's identity:
+
+- SLSA build provenance for every asset.
+- An SBOM attestation binding each `.spdx.json` to its archive.
+- A [build inputs attestation](build-inputs.md) for every asset, recording the inputs and toolchain each target was built with.
+
+Archive naming and attestation subjects are part of the contract: installers and download actions may rely on them.
 
 ## What callers must know
 
 - **Builds are clean-room**: no module or toolchain caches are used in the release path (`setup-go` runs with `cache: false`). Release builds are slower than CI builds; that is the price of the integrity claim.
 - **`GOTOOLCHAIN=local`** is set for the build: a `go.mod` `toolchain` directive newer than the resolved toolchain fails loudly instead of silently fetching an unpinned one. `go mod verify` checks every downloaded module against `go.sum`, making sumdb verification explicit.
-- **Version resolution defaults to `go.mod`**: leave `go-version` empty to keep the release toolchain pinned in the same reviewed file as the code it builds; set it explicitly to override.
 - **Version is not embedded automatically**: the archive and checksum names are derived entirely from the tag (`github.ref_name`), not from anything compiled into the binary. If your build should embed a version, extend `ldflags`, e.g. `"-s -w -X main.version=${{ github.ref_name }}"`.
-- **`cgo` changes the trust surface, not just the runner**: `cgo: false` (default) builds every target on one Linux runner using Go's own cross-compiler backends — no external cross toolchain is involved. `cgo: true` moves each target to a runner with a native C toolchain and drops `windows/*` entirely, since this workflow has no reviewed mingw provisioning path.
 - **SBOMs are per-binary, not per-release**, and generated from the compiled binary rather than `go.mod` — a dependency present in `go.mod` but linked into no released binary (test-only, build-tag-gated) correctly does not appear. The main module's SBOM version is always set to the release tag directly, not left to Syft/Go's own resolution: a real checkout doesn't leave the tag reliably resolvable, so Go's `-buildvcs` machinery reports an unhelpful pseudo-version rather than the tag itself.
 - **One release per tag, ever.** Re-running the workflow against a tag that already has a published release still performs the build and provenance jobs, but the publish step returns the existing release's URL without replacing its assets. Failures before that step still fail the workflow. Immutable releases mean nothing can repair or replace that release in place — fix-forward with a new tag.
-- **Dependencies are pinned centrally** (all actions) and bumped via reviewed `fix(deps)` patch releases — callers inherit them by bumping their pinned SHA, normally via Renovate.
+- **Dependencies are pinned centrally** (Syft, all actions) and bumped via reviewed `fix(deps)` patch releases — callers inherit them by bumping their pinned SHA, normally via Renovate.
 
 ## Verifying what it produced
 
@@ -153,9 +168,8 @@ Before publishing, the release job runs these commands itself: provenance and bu
 
 ## Adoption checklist
 
-1. Delete in-repo build/package/publish release jobs; add the caller above.
+1. Delete the in-repo build, package and publish jobs, and add the caller above.
 2. Create the environment named by `environment` (default `release`) and add a required reviewer.
-3. Confirm the tag ruleset permits your release tag pattern and enable
-   immutable releases.
-4. Cut a pre-release tag; run the verify command against every asset.
-5. Add the standard verification section to the project README.
+3. Confirm the tag ruleset permits your release tag pattern, and enable immutable releases.
+4. Cut the first release and confirm it publishes. The release job verifies every attestation before publishing.
+5. Add the commands from [Verifying what it produced](#verifying-what-it-produced) to the project README.

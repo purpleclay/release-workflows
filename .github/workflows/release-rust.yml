@@ -9,27 +9,31 @@ on:
       targets:
         description: >-
           JSON array of Rust target triples, e.g.
-          ["x86_64-unknown-linux-musl","aarch64-apple-darwin"]. Must be a
-          subset of the supported allowlist (see the plan job).
+          ["x86_64-unknown-linux-musl","aarch64-apple-darwin"]. Supported:
+          x86_64-unknown-linux-musl, aarch64-unknown-linux-musl,
+          x86_64-apple-darwin and aarch64-apple-darwin.
         type: string
         required: true
       toolchain:
-        description: Rust toolchain specifier (stable, 1.89.0, ...)
+        description: >-
+          Rust toolchain to build with, e.g. stable or 1.89.0. A
+          rust-toolchain.toml in the repository takes precedence.
         type: string
         required: false
         default: stable
       environment:
         description: >-
-          GitHub environment the publish job runs under (S11). Referencing a
-          missing environment auto-creates it unprotected — add a required
-          reviewer in each adopting repo to complete the control.
+          GitHub environment the attest and publish jobs run under. GitHub
+          creates a missing environment without protection, so add a
+          required reviewer in each repo.
         type: string
         required: false
         default: release
       package-files:
         description: >-
-          Space-separated list of extra files bundled into each release
-          archive alongside the binary. Missing files are skipped.
+          Space-separated list of extra files, relative to the repository
+          root, bundled into each release archive alongside the binary.
+          Missing files are skipped.
         type: string
         required: false
         default: LICENSE README.md
@@ -41,15 +45,9 @@ on:
 permissions: {}
 
 env:
-  # Trusted build-tool pins. Bumping these is a release-security change for
-  # every consuming project; treat with the same review weight as code.
-  # Zig's source moved to Codeberg (https://codeberg.org/ziglang/zig), but
-  # release artifacts are still published via ziglang.org/download, so the
-  # setup_zig mirror below is unaffected. GitHub's mirror of ziglang/zig is
-  # stale (stuck at 0.15.x), so this pin is tracked by the repo-local
-  # Codeberg-aware regex manager in .github/renovate.json rather than the
-  # shared datasource=github-tags pattern used below for ZIGBUILD_VERSION.
-
+  # Build-tool pins. A bump changes release security for every caller, so
+  # review it like code. ZIG_VERSION uses the Codeberg manager in
+  # .github/renovate.json, because GitHub's ziglang/zig mirror is stale.
   # renovate: depName=ziglang/zig
   ZIG_VERSION: "0.17.0"
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
@@ -60,9 +58,9 @@ env:
   CARGO_AUDITABLE_VERSION: "0.7.7"
 
 jobs:
-  # Validates requested targets against the explicit allowlist and emits the
-  # build matrix. Fails fast on anything unsupported — a trust-root workflow
-  # never guesses a runner or build strategy for an unknown target.
+  # Checks the requested targets against an allowlist and emits the build
+  # matrix. A trust-root workflow never guesses how to build an unknown
+  # target.
   plan:
     name: plan_build_matrix
     runs-on: ubuntu-26.04
@@ -75,13 +73,9 @@ jobs:
         uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
         with:
           egress-policy: block
-          # The reviewed mirror hosts below (all of .github/zig-mirrors.txt)
-          # must be probed for liveness before one can be pinned into the
-          # build matrix (see compose_build_matrix) — this list can't be
-          # derived from that file at runtime, since harden_runner is the
-          # very first step and runs before checkout_release_workflows.
-          # Keep in sync by hand: adding a mirror to zig-mirrors.txt means
-          # adding its host here too, or the probe can never reach it.
+          # Every host in .github/zig-mirrors.txt, so compose_build_matrix
+          # can probe them. This step runs before checkout, so the list
+          # can't be read from that file. Keep the two in sync by hand.
           allowed-endpoints: >
             github.com:443
             ziglang.org:443
@@ -105,13 +99,9 @@ jobs:
       - name: checkout_release_workflows
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # This reusable workflow's own repo content (the reviewed mirror
-          # list, see #31) — not the caller's, which is what a bare
-          # checkout would default to, and not github.workflow_sha either
-          # (that identifies the *caller's* workflow file, which won't
-          # exist as a commit in this repo at all). job.workflow_repository
-          # + job.workflow_sha are the ones documented for a reusable
-          # workflow checking out its own source.
+          # This workflow's own repo, for the reviewed mirror list. A
+          # bare checkout gets the caller's repo, and github.workflow_sha
+          # names the caller's commit.
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           persist-credentials: false
@@ -137,20 +127,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # cargo's registry/crate-file hosts, the toolchain installer, and
-          # (needed on every leg since SBOM generation) taiki-e/install-action
-          # (cargo-auditable) and anchore/sbom-action (Syft) — all verified
-          # against real harden-runner audit logs, not guessed (see #23).
-          # api.github.com is deliberately excluded: confirmed unused by
-          # build, needed only by attest_sbom's own gh api call.
+          # Hosts every build leg needs: crates.io, the Rust toolchain, and
+          # the cargo-auditable and Syft downloads. Taken from harden-runner
+          # audit logs (#23). api.github.com isn't needed here.
           common_endpoints="github.com:443 index.crates.io:443 static.crates.io:443 static.rust-lang.org:443 raw.githubusercontent.com:443 release-assets.githubusercontent.com:443"
 
-          # zigbuild legs also need cargo-zigbuild (via install-action) and
-          # zig itself. community-mirrors.txt is mutable, unreviewed content
-          # — trust only mirrors that are both live upstream and already
-          # reviewed into .github/zig-mirrors.txt (#31), comparing full base
-          # URLs so a hijacked subpath on an already-approved host doesn't
-          # slip through a hostname-only comparison.
+          # zigbuild legs also need a Zig mirror. community-mirrors.txt is
+          # mutable and unreviewed, so trust only mirrors that are live and
+          # listed in .github/zig-mirrors.txt (#31). Compare full base URLs,
+          # not hostnames, so a hijacked path on an approved host fails.
           live_mirrors=$(curl -fsSL https://ziglang.org/download/community-mirrors.txt \
             | sed -E 's#/+$##' | sort -u)
           reviewed_mirrors=$(sed -E 's#/+$##' .github/zig-mirrors.txt | sort -u)
@@ -161,14 +146,10 @@ jobs:
             exit 1
           fi
 
-          # Pin one specific, reviewed mirror for setup_zig's `mirror:`
-          # override rather than letting it pick at random: setup-zig
-          # doesn't retry or fall back on failure, so an unconfirmed pick
-          # risks failing the whole leg. Probe candidates in random order,
-          # commit to the first that responds for the exact tarball needed
-          # (served flat, at <base>/<file>, not ziglang.org's own
-          # <base>/<version>/<file> layout). HEAD, not a ranged GET: some
-          # mirrors ignore Range and stream the whole ~55MB file instead.
+          # Pin one mirror for setup_zig, which doesn't retry or fall back.
+          # Probe in random order and take the first that serves the tarball
+          # at <base>/<file>. HEAD, not a ranged GET: some mirrors ignore
+          # Range and stream the whole ~55MB file.
           zig_tarball="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           zig_mirror=""
           while IFS= read -r candidate; do
@@ -224,11 +205,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    # Per-target outputs: the id of the artifact each leg uploaded, so
-    # downstream jobs download exactly that rather than whatever matches a
-    # name in the caller's run, and the build inputs each leg resolved. Each
-    # leg writes only its own keys, and GitHub combines distinct keys across
-    # matrix legs. Keep in sync with plan's target map.
+    # One output per target, written only by that target's leg. GitHub
+    # merges distinct keys across matrix legs. artifact-id lets later jobs
+    # download exactly what was uploaded, not whatever matches a name in the
+    # caller's run. Keep in sync with plan's target map.
     outputs:
       artifact-id-x86_64-unknown-linux-musl: ${{ steps.report.outputs.artifact-id-x86_64-unknown-linux-musl }}
       artifact-id-aarch64-unknown-linux-musl: ${{ steps.report.outputs.artifact-id-aarch64-unknown-linux-musl }}
@@ -251,22 +231,20 @@ jobs:
           persist-credentials: false
 
       - name: rust_toolchain
-        # Explicit toolchain + cross-target install; hand-rolling rustup here
-        # would just reimplement this action with less auditability.
-        # dtolnay/rust-toolchain intentionally ships no tags — master/stable/
-        # beta/nightly are branch aliases by design, so the pin below is the
-        # tip of "master", not a stale reference. Both zizmor findings on
-        # this line are suppressed in .github/zizmor.yml, not inline.
+        # dtolnay/rust-toolchain ships no tags, so this pins the tip of the
+        # master branch. zizmor flags it as stale whenever master moves ahead,
+        # until Renovate bumps the pin. Rustup by hand would be harder to
+        # audit than this action.
+        # zizmor: ignore[superfluous-actions]
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
-          # Required: when this action is pinned by SHA the @ref no longer
-          # names a toolchain, so it must be passed explicitly.
+          # A SHA pin doesn't name a toolchain, so pass one explicitly.
           toolchain: ${{ inputs.toolchain }}
           targets: ${{ matrix.target }}
 
       # Recorded before any cargo command, so caller code (build.rs, proc
-      # macros) hasn't run yet and can't change it. rustc runs inside the
-      # checkout, so a rust-toolchain.toml override is reflected.
+      # macros) can't change it. rustc runs in the checkout, so a
+      # rust-toolchain.toml override shows up.
       - name: record_build_inputs
         id: record
         env:
@@ -284,9 +262,7 @@ jobs:
       - name: install_cargo_auditable
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
-          # Needed on every leg, zigbuild and native alike — both build
-          # paths get wrapped so Syft's cargo-auditable-binary-cataloger has
-          # embedded dependency data to read.
+          # Every leg: Syft reads the dependency data it embeds.
           tool: cargo-auditable@${{ env.CARGO_AUDITABLE_VERSION }}
           checksum: true
 
@@ -296,20 +272,16 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           use-cache: false
-          # Pinned to the specific mirror the plan job already probed and
-          # reviewed (#31) — without this, setup-zig fetches the live
-          # community-mirrors.txt itself and picks at random, which neither
-          # this workflow's review process nor its egress allowlist would
-          # ever see.
+          # The mirror plan probed (#31). Without it, setup-zig picks one at
+          # random from the live list, outside review and the allowlist.
           mirror: ${{ matrix.zig-mirror }}
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
-          # Prebuilt binary, checksum-verified against install-action's
-          # committed manifest. @version pin is mandatory — bare tool names
-          # float to latest at runtime.
+          # Checksum-verified prebuilt binary. Without @version it floats to
+          # the latest release.
           tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}
           checksum: true
 
@@ -318,10 +290,9 @@ jobs:
         env:
           BIN: ${{ inputs.bin }}
           TARGET: ${{ matrix.target }}
-        # Argument order is load-bearing: `cargo auditable zigbuild` embeds
-        # dependency data, `cargo zigbuild auditable` silently doesn't
-        # (confirmed by a cargo-auditable maintainer,
-        # rust-secure-code/cargo-auditable#179).
+        # Order matters: `cargo auditable zigbuild` embeds dependency data,
+        # `cargo zigbuild auditable` silently doesn't
+        # (rust-secure-code/cargo-auditable#179).
         run: cargo auditable zigbuild --locked --release --target "$TARGET" --bin "$BIN"
 
       - name: build (native)
@@ -340,19 +311,14 @@ jobs:
           PACKAGE_FILES: ${{ inputs.package-files }}
         run: |
           set -euo pipefail
-          # github.ref_name can contain "/" (e.g. component-scoped tags like
-          # "cli/v1.2.3"). Sanitize before using it in the archive filename so
-          # tar doesn't need intermediate directories under dist/ to exist.
+          # Tags like "cli/v1.2.3" contain "/", which can't go in a filename.
           version="${VERSION//\//-}"
           pkg_dir="$(mktemp -d)/${BIN}"
           mkdir -p "${pkg_dir}" dist
           cp "target/${TARGET}/release/${BIN}" "${pkg_dir}/"
-          # Flattened into one directory, so two package-files with the same
-          # basename (e.g. from different source directories) would silently
-          # overwrite each other; track basenames seen so far and fail loudly
-          # instead. Plain indexed array, not `declare -A`: the darwin legs
-          # run on macos-15, whose default `bash` is the system-shipped 3.2,
-          # which has no associative arrays.
+          # Files are flattened into one directory, so fail on a basename
+          # collision rather than silently overwrite. Indexed array, not
+          # declare -A: macOS runners ship bash 3.2.
           seen_basenames=()
           for f in $PACKAGE_FILES; do
             [ -f "$f" ] || continue
@@ -374,12 +340,8 @@ jobs:
           tar czf "dist/${asset}" -C "${pkg_dir}" .
           echo "asset=${asset}" >> "$GITHUB_OUTPUT"
 
-      # file:, not path: — a binary scan, so Syft's cargo-auditable-binary-
-      # cataloger only reports what's actually linked in (dev/build-only
-      # deps correctly do not appear; verified against Syft's own
-      # capabilities.yaml and a local spike).
-      # upload-artifact/upload-release-assets: false — dist/ ->
-      # upload_archive -> attest_sbom is the only path an SBOM should travel.
+      # Scans the binary (file:), not the source tree (path:), so only linked
+      # dependencies appear. Uploads are off: the SBOM travels only in dist/.
       - name: generate_sbom
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -397,10 +359,8 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Resolve the crate owning $BIN via cargo metadata: a [[bin]] name
-          # can differ from [package] name, and no selector survives into
-          # the SPDX output more reliably (cargo-auditable's root: bool
-          # marker for the main package is dropped by Syft's rust cataloger).
+          # Find the crate that owns $BIN: a [[bin]] name can differ from its
+          # package name, and Syft drops cargo-auditable's root marker.
           crate_info=$(cargo metadata --no-deps --locked --format-version=1 \
             | jq -c --arg bin "$BIN" '
                 [.packages[] | select(.targets[] | .kind[]? == "bin" and .name == $bin) | {name, version}]
@@ -410,14 +370,9 @@ jobs:
 
           comment="Generated from the compiled binary (post-build) via Syft's cargo-auditable-binary-cataloger, not a Cargo.lock/source-tree scan."
 
-          # Match on name AND version, not name alone: a transitive
-          # dependency can legitimately share the root crate's name from a
-          # different source (e.g. a crates.io package with the same name
-          # as a local/path root), so name alone doesn't uniquely identify
-          # it — confirmed empirically, Syft emits both as separate
-          # packages. Exclude primaryPackagePurpose == "FILE" — the SPDX
-          # document's own scanned-file entry, which shares $crate's name
-          # whenever there's no custom [[bin]] name (the common case).
+          # Match name and version: a dependency can share the root crate's
+          # name. Skip primaryPackagePurpose "FILE", the scanned file's own
+          # entry, which shares the crate's name unless [[bin]] renames it.
           if ! jq \
             --arg crate "$crate_name" \
             --arg crate_version "$crate_version" \
@@ -440,9 +395,7 @@ jobs:
         id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # Prefixed with `bin` so two calls to this workflow in the same
-          # caller run (e.g. building two binaries) can't collide on an
-          # overlapping target.
+          # Prefixed with bin, so two calls in one caller run can't collide.
           name: dist-${{ inputs.bin }}-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
@@ -458,13 +411,9 @@ jobs:
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
         run: echo "artifact-id-${TARGET}=${ARTIFACT_ID}" >> "$GITHUB_OUTPUT"
 
-  # One actions/attest call per target: sbom-path binds one SBOM per call,
-  # and each target's SBOM is distinct, so this can't batch into
-  # provenance's single glob-based attest_build_provenance call. Kept out
-  # of build's matrix deliberately — folding it in would move the
-  # required-reviewer approval (same environment as provenance) to before
-  # compilation, once per target, instead of once after every build
-  # succeeds.
+  # One attest call per target, because sbom-path takes a single SBOM. Kept
+  # out of build so the environment's reviewer approves once, after every
+  # build succeeds, not once per target before compiling.
   attest_sbom:
     name: attest_sbom / ${{ matrix.target }}
     needs: [plan, build]
@@ -488,8 +437,7 @@ jobs:
             fulcio.sigstore.dev:443
             rekor.sigstore.dev:443
 
-      # No checkout: nothing in this job touches repo files, and it has no
-      # contents: permission.
+      # No checkout: this job never reads repo files.
 
       - name: resolve_artifact_id
         id: artifact
@@ -534,10 +482,8 @@ jobs:
 
   provenance:
     name: attest_and_publish
-    # Publishing must never happen unless every target's SBOM attestation
-    # already succeeded — releases are immutable and can't be fixed in
-    # place, so this trades one sequential stage of latency for that
-    # guarantee.
+    # Waits for every SBOM attestation. Releases are immutable, so one must
+    # never publish without them.
     needs: [plan, build, attest_sbom]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -629,10 +575,7 @@ jobs:
       - name: attest_build_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          # Deliberately includes checksums.txt and every *.spdx.json:
-          # "every asset" is bound to the same build-provenance trust chain,
-          # in addition to each SBOM's own dedicated attestation from
-          # attest_sbom.
+          # Every asset, including checksums.txt and the SBOMs.
           subject-path: dist/*
 
       - name: attest_build_inputs
@@ -680,18 +623,10 @@ jobs:
           NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
         run: |
           set -euo pipefail
-          # gh always exits 1 on failure, whether the release is genuinely
-          # absent, or the check itself failed (auth, network, GitHub API
-          # error). Only the exact "release not found" message confirms
-          # absence; anything else is a real failure and must abort here.
-          #
-          # Immutable releases mean an existing release for this tag can
-          # never be deleted or modified, complete or not — there is no
-          # recovery path here but a new tag (see "Fixing a bad release" in
-          # RELEASE.md). So existence is treated as done, not something to
-          # replace: no delete, ever, on this path. The tag itself belongs
-          # to the caller (verified to exist below via --verify-tag), so
-          # this only ever concerned the release object, never the tag.
+          # gh exits 1 whether the release is missing or the lookup failed,
+          # so only the exact "release not found" message means it's absent.
+          # An existing release is immutable and is left alone; a bad one
+          # needs a new tag (see "Fixing a bad release" in RELEASE.md).
           if view_output=$(gh release view "$TAG" 2>&1 >/dev/null); then
             echo "release for '$TAG' already exists; nothing to publish"
             url=$(gh release view "$TAG" --json url --jq '.url')
