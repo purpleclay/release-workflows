@@ -21,10 +21,14 @@
     },
     {
       "customType": "regex",
-      "description": "Update build runner labels the plan job writes into the build matrix. They sit inside jq strings, which the github-actions manager can't see.",
-      "managerFilePatterns": ["/^\\.github/workflows/release-(go|rust)\\.yml$/"],
+      "description": "Update build runner labels in the plan job's jq strings, which the github-actions manager can't see, and in the supported-targets tables of the docs.",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/release-(go|rust)\\.yml$/",
+        "/^docs/release-(go|rust)\\.md$/"
+      ],
       "matchStrings": [
-        "\"(?<depName>ubuntu|macos)-(?<currentValue>[0-9]+(?:\\.[0-9]+)?)(?:-arm)?\""
+        "\"(?<depName>ubuntu|macos)-(?<currentValue>[0-9]+(?:\\.[0-9]+)?)(?:-arm)?\"",
+        "\\| (?<depName>ubuntu|macos)-(?<currentValue>[0-9]+(?:\\.[0-9]+)?)(?:-arm)? +\\|"
       ],
       "datasourceTemplate": "github-runners"
     }

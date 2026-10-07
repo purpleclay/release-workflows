@@ -1,25 +1,38 @@
 # Release Workflows
 
+Reusable GitHub Actions workflows that build, sign, and publish releases, with no secrets and no signing keys.
+
 [![MIT](https://img.shields.io/badge/MIT-gray?logo=github&logoColor=white)](LICENSE)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/purpleclay/release-workflows/badge)](https://scorecard.dev/viewer/?uri=github.com/purpleclay/release-workflows)
+[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
 
-Reusable release workflows for projects. Every release built here ships with SLSA Build Level 3 provenance and keyless Sigstore signatures — no per-project secrets or signing-key management. Go and Rust releases also ship a per-binary, attested SPDX SBOM.
+## What every release gets
+
+- **SLSA Build L3 provenance.** Signed under this repository's workflow identity, which a calling project can neither edit nor impersonate.
+- **Keyless Sigstore signing.** Short-lived certificates issued over OIDC. No per-project secrets, no key rotation, nothing to leak.
+- **Per-binary SPDX SBOMs.** Generated from the compiled binary rather than the lockfile, and attested alongside it.
+- **Recorded build inputs.** The inputs, toolchain, and runner image behind each binary, signed as their own attestation.
+- **Verified before publishing.** Every attestation is checked against the release tag and this workflow's commit. Nothing that fails is published.
+- **Hardened by default.** Clean-room builds with no caches, every action pinned to a commit SHA, and network egress limited to an allowlist.
 
 ## Why this repository exists
 
-GitHub artifact attestations generated inside a project's own workflow reach SLSA Build **Level 2**: the provenance is real, but it is produced by the same workflow a compromised repository could edit. Level **3** requires the provenance to be generated somewhere the build cannot reach — a shared, vetted, isolated workflow whose identity a tenant build cannot impersonate.
+Attestations generated inside a project's own workflow reach SLSA Build Level 2: the provenance is real, but a compromised repository could edit the workflow that produced it. Level 3 needs provenance from a shared workflow the project can't edit or impersonate. This repository is that workflow, so consumers can verify a release was built by this pipeline, at a known commit, from a known source revision.
 
-This repository is that workflow. Projects delegate their release to it with a single `uses:` call, and consumers gain something stronger than "this artifact has provenance": they can verify that a release was built by _this specific pipeline_, at a known commit, from a known source revision — and reject anything that wasn't.
+**One place to get release security right.** Centralising the release path means there's exactly one implementation to review and improve. A hardening change lands here once, and every project inherits it on its next release.
 
-Centralising the release path has a second benefit that has nothing to do with attestations: there is exactly one place where release security is implemented, reviewed, and improved. A hardening change lands here once and every project inherits it on its next release.
+## How it works
 
-## Workflows
+A project delegates its release with a single `uses:` call. Every stage then runs as its own job, and only the final stages can sign anything.
 
-| Workflow                                           | Purpose                                  | Caller contract                              |
-| -------------------------------------------------- | ---------------------------------------- | -------------------------------------------- |
-| [release-rust](.github/workflows/release-rust.yml) | Build, attest, and release Rust binaries | [docs/release-rust.md](docs/release-rust.md) |
-| [release-go](.github/workflows/release-go.yml)     | Build, attest, and release Go binaries   | [docs/release-go.md](docs/release-go.md)     |
+## Getting started
 
-The contract documents define everything callers may rely on — usage, inputs, outputs, supported targets, archive naming, attestation subjects, adoption steps, and how to verify what was produced — and change only under the versioning rules in [RELEASE.md](RELEASE.md).
+Pick a workflow and follow its caller contract. Each contract is the single source of truth for that workflow: usage, inputs, outputs, supported targets, archive naming, attestation subjects, an adoption checklist, and how consumers verify what was produced. Contracts change only under the versioning rules in [RELEASE.md](RELEASE.md).
 
-Pin the full commit SHA of whichever workflow you adopt, with the version as a trailing comment, so your dependency-update tooling (Renovate, Dependabot, ...) can propose bumps — there are no floating major tags here, by design.
+| Workflow                                             | Builds        | Example tag | Caller contract                                                                                                                                          |
+| :--------------------------------------------------- | :------------ | :---------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`release-rust`](.github/workflows/release-rust.yml) | Rust binaries | `1.2.3`     | [Usage](docs/release-rust.md#usage) · [Adopting](docs/release-rust.md#adoption-checklist) · [Verifying](docs/release-rust.md#verifying-what-it-produced) |
+| [`release-go`](.github/workflows/release-go.yml)     | Go binaries   | `v1.2.3`    | [Usage](docs/release-go.md#usage) · [Adopting](docs/release-go.md#adoption-checklist) · [Verifying](docs/release-go.md#verifying-what-it-produced)       |
+
+> [!IMPORTANT]
+> **Pin the full commit SHA**, with the version as a trailing comment, so Renovate or Dependabot can propose bumps. There are no floating major tags here, by design.

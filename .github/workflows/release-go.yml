@@ -9,24 +9,23 @@ on:
       targets:
         description: >-
           JSON array of Go platforms as "GOOS/GOARCH" pairs, e.g.
-          ["linux/amd64","darwin/arm64"]. Must be a subset of the supported
-          allowlist (see the plan job).
+          ["linux/amd64","darwin/arm64"]. Supported: linux/amd64,
+          linux/arm64, darwin/amd64, darwin/arm64, windows/amd64 and
+          windows/arm64 (windows only without cgo).
         type: string
         required: true
       go-version:
         description: >-
-          Go toolchain version (e.g. 1.25.1). When empty, the version is
-          resolved from the go.mod of the calling repository — the preferred
-          default, since it keeps the release toolchain pinned in the same
-          reviewed file as the code it builds.
+          Go version to build with, e.g. 1.25.1. Empty uses the version in
+          go.mod.
         type: string
         required: false
         default: ""
       cgo:
         description: >-
-          Enable cgo. Default false: pure-Go cross-compilation lets every
-          target build on one Linux runner. Enabling it moves each target to
-          a native runner (see the plan job) and drops windows/* support.
+          Enable cgo. When off, every target cross-compiles on one Linux
+          runner. When on, each target builds on a native Linux or macOS
+          runner, and windows targets are unsupported.
         type: boolean
         required: false
         default: false
@@ -37,27 +36,24 @@ on:
         default: "."
       ldflags:
         description: >-
-          Linker flags passed to go build. Callers injecting a version should
-          extend this, e.g. "-s -w -X main.version=" followed by the release
-          tag (github.ref_name in the caller's own workflow). Avoid writing a
-          literal expression here: GitHub evaluates ${ }-style syntax
-          anywhere in this file, including this description, where the
-          github context isn't in scope.
+          Linker flags passed to go build. To embed the version, extend the
+          default, e.g. "-s -w -X main.version=<tag>".
         type: string
         required: false
         default: "-s -w"
       environment:
         description: >-
-          GitHub environment the publish job runs under (S11). Referencing a
-          missing environment auto-creates it unprotected — add a required
-          reviewer in each adopting repo to complete the control.
+          GitHub environment the attest and publish jobs run under. GitHub
+          creates a missing environment without protection, so add a
+          required reviewer in each repo.
         type: string
         required: false
         default: release
       package-files:
         description: >-
-          Space-separated list of extra files bundled into each release
-          archive alongside the binary. Missing files are skipped.
+          Space-separated list of extra files, relative to the repository
+          root, bundled into each release archive alongside the binary.
+          Missing files are skipped.
         type: string
         required: false
         default: LICENSE README.md
@@ -73,12 +69,9 @@ env:
   SYFT_VERSION: "v1.54.1"
 
 jobs:
-  # Validates requested targets against the explicit allowlist and emits the
-  # build matrix. Fails fast on anything unsupported — a trust-root workflow
-  # never guesses a runner or build strategy for an unknown target. Unlike
-  # release-rust there is no mirror probing here: the Go toolchain and module
-  # proxy are single, first-party distribution points, so this job needs no
-  # checkout and makes no egress of its own.
+  # Checks the requested targets against an allowlist and emits the build
+  # matrix. A trust-root workflow never guesses how to build an unknown
+  # target. No mirrors to probe, unlike release-rust, so no egress.
   plan:
     name: plan_build_matrix
     runs-on: ubuntu-26.04
@@ -111,21 +104,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Two runner maps, keyed on cgo:
-          #
-          # cgo=false — every target cross-compiles from a single Linux
-          # runner. The Go toolchain ships its own cross backends, so no
-          # external cross toolchain (and none of release-rust's zig mirror
-          # machinery) is needed.
-          #
-          # cgo=true — each target must build where a native C toolchain
-          # exists. linux/arm64 uses ubuntu-24.04-arm (free for public
-          # repos only — private repos would need a larger-runner label).
-          # Both darwin targets build on macos-15: Apple clang is a
-          # universal cross-arch compiler, so darwin/amd64 with cgo works
-          # from the arm64 runner. windows/* with cgo is deliberately
-          # unsupported — it would require a mingw toolchain this workflow
-          # has no reviewed provisioning path for.
+          # Without cgo, Go cross-compiles every target from one Linux runner.
+          # With cgo, each target needs a native C toolchain: linux/arm64
+          # uses the -arm runner (free for public repos only), and both
+          # darwin targets share the macOS runner, as Apple clang compiles
+          # for either arch. windows/* with cgo would need mingw, which
+          # this workflow has no reviewed way to install.
           if ! matrix=$(jq -c --argjson cgo "$CGO" '
             def meta($t):
               ($t | split("/")) as $p |
@@ -179,11 +163,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-    # Per-target outputs: the id of the artifact each leg uploaded, so
-    # downstream jobs download exactly that rather than whatever matches a
-    # name in the caller's run, and the build inputs each leg resolved. Each
-    # leg writes only its own keys, and GitHub combines distinct keys across
-    # matrix legs. Keys use goos-goarch because "/" isn't valid in an output
+    # One output per target, written only by that target's leg. GitHub
+    # merges distinct keys across matrix legs. artifact-id lets later jobs
+    # download exactly what was uploaded, not whatever matches a name in the
+    # caller's run. Keys use goos-goarch, as "/" isn't valid in an output
     # name. Keep in sync with plan's target map.
     outputs:
       artifact-id-linux-amd64: ${{ steps.report.outputs.artifact-id-linux-amd64 }}
@@ -215,9 +198,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # cache: false on both variants — a release build must never restore a
-      # mutable cache another workflow populated; cache poisoning would sit
-      # below everything this workflow attests to.
+      # cache: false: a release build must never restore a cache another
+      # workflow could have poisoned.
       - name: setup_go (from go.mod)
         if: ${{ inputs.go-version == '' }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -248,13 +230,9 @@ jobs:
           printf 'build-inputs-%s=%s\n' "$KEY" "$facts" >> "$GITHUB_OUTPUT"
 
       - name: verify_modules
-        # GOTOOLCHAIN=local prevents the go command from silently fetching a
-        # different (unpinned) toolchain when go.mod carries a newer
-        # `toolchain` directive — a mismatch fails loudly here instead of
-        # introducing an unreviewed download. go mod verify checks every
-        # downloaded module against go.sum, making sumdb verification an
-        # explicit, visible gate rather than an implicit side effect of the
-        # build.
+        # GOTOOLCHAIN=local fails on a newer go.mod toolchain directive
+        # instead of silently downloading it. go mod verify checks every
+        # module against go.sum as its own visible step.
         env:
           GOTOOLCHAIN: local
         run: |
@@ -268,18 +246,14 @@ jobs:
           BIN: ${{ inputs.bin }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          # Explicit on every leg, both ways: Go silently flips cgo off when
-          # GOOS/GOARCH differ from the host, so relying on defaults would
-          # make the input a no-op on exactly the legs where it matters.
+          # Always explicit: Go turns cgo off when cross-compiling.
           CGO_ENABLED: ${{ inputs.cgo && '1' || '0' }}
           EXT: ${{ matrix.ext }}
           PACKAGE: ${{ inputs.package }}
           LDFLAGS: ${{ inputs.ldflags }}
-        # -trimpath strips runner-local paths from the binary for
-        # reproducibility across runs. ldflags is caller-controlled, but the
-        # caller already controls the source being built, so this is not a
-        # trust-boundary crossing; passing it via env keeps it out of shell
-        # interpolation regardless.
+        # -trimpath strips runner paths from the binary. ldflags comes from
+        # the caller, who controls the source anyway; env keeps it out of
+        # shell interpolation.
         run: |
           set -euo pipefail
           mkdir -p build-out
@@ -297,18 +271,14 @@ jobs:
           PACKAGE_FILES: ${{ inputs.package-files }}
         run: |
           set -euo pipefail
-          # github.ref_name can contain "/" (e.g. component-scoped tags like
-          # "cli/v1.2.3"). Sanitize before using it in the archive filename.
+          # Tags like "cli/v1.2.3" contain "/", which can't go in a filename.
           version="${VERSION//\//-}"
           pkg_dir="$(mktemp -d)/${BIN}"
           mkdir -p "${pkg_dir}" dist
           cp "build-out/${BIN}${EXT}" "${pkg_dir}/"
-          # Flattened into one directory, so two package-files with the same
-          # basename (e.g. from different source directories) would silently
-          # overwrite each other; track basenames seen so far and fail loudly
-          # instead. Plain indexed array, not `declare -A`: darwin/* legs run
-          # on macos-15, whose default `bash` is the system-shipped 3.2,
-          # which has no associative arrays.
+          # Files are flattened into one directory, so fail on a basename
+          # collision rather than silently overwrite. Indexed array, not
+          # declare -A: macOS runners ship bash 3.2.
           seen_basenames=()
           for f in $PACKAGE_FILES; do
             [ -f "$f" ] || continue
@@ -326,9 +296,7 @@ jobs:
             seen_basenames+=("$base")
             cp -- "$f" "${pkg_dir}/"
           done
-          # zip for windows follows the platform's unpacking convention;
-          # tar.gz everywhere else. Both tools are preinstalled on the
-          # ubuntu and macos hosted images.
+          # zip for windows, as Windows users expect; tar.gz everywhere else.
           if [ "$ARCHIVE" = "zip" ]; then
             asset="${BIN}-${version}-${GOOS}-${GOARCH}.zip"
             (cd "${pkg_dir}" && zip -qr "${OLDPWD}/dist/${asset}" .)
@@ -355,22 +323,14 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Syft's SPDX output has no reliable "this is the main module"
-          # marker: documentDescribes points at the scanned FILE, not a
-          # package, and primaryPackagePurpose is null on every module
-          # package (verified empirically, not assumed from docs). Match by
-          # name against the real module path instead, and fail loudly if
-          # that isn't exactly one package.
-          #
-          # Its version is always set to $VERSION (github.ref_name): the
-          # checkout doesn't fetch tags, so Syft/Go can't reliably resolve
-          # it themselves, and github.ref_name is the authoritative answer
-          # anyway.
+          # Syft doesn't mark the main module (documentDescribes points at
+          # the scanned file, and primaryPackagePurpose is null), so match it
+          # by module path. Its version is set to the tag: the checkout has
+          # no tags, so Go can't resolve it.
           module_path=$(go list -m)
           comment="Generated from the compiled binary (post-build) via Syft, not a source-tree scan."
-          # Written straight to a temp file, not captured via $(...) and
-          # echoed back — verified empirically that round-tripping this much
-          # JSON through command substitution is unreliable.
+          # Write to a temp file: this much JSON doesn't round-trip reliably
+          # through $(...).
           if ! jq \
             --arg module "$module_path" \
             --arg version "$VERSION" \
@@ -395,10 +355,8 @@ jobs:
         id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # "/" is not a legal artifact-name character, so the artifact key
-          # uses goos-goarch. Prefixed with `bin` so two calls to this
-          # workflow in the same caller run (e.g. building two binaries)
-          # can't collide on an overlapping target.
+          # goos-goarch, as "/" isn't valid in an artifact name. Prefixed
+          # with bin, so two calls in one caller run can't collide.
           name: dist-${{ inputs.bin }}-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
@@ -480,10 +438,8 @@ jobs:
 
   provenance:
     name: attest_and_publish
-    # Publishing must never happen unless every target's SBOM attestation
-    # already succeeded — releases are immutable and can't be fixed in
-    # place, so this trades one sequential stage of latency for that
-    # guarantee.
+    # Waits for every SBOM attestation. Releases are immutable, so one must
+    # never publish without them.
     needs: [plan, build, attest_sbom]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
@@ -569,10 +525,7 @@ jobs:
       - name: attest_build_provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          # Deliberately includes checksums.txt and every *.spdx.json:
-          # "every asset" is bound to the same build-provenance trust chain,
-          # in addition to each SBOM's own dedicated attestation from
-          # attest_sbom.
+          # Every asset, including checksums.txt and the SBOMs.
           subject-path: dist/*
 
       - name: attest_build_inputs
@@ -621,18 +574,10 @@ jobs:
           NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
         run: |
           set -euo pipefail
-          # gh always exits 1 on failure, whether the release is genuinely
-          # absent, or the check itself failed (auth, network, GitHub API
-          # error). Only the exact "release not found" message confirms
-          # absence; anything else is a real failure and must abort here.
-          #
-          # Immutable releases mean an existing release for this tag can
-          # never be deleted or modified, complete or not — there is no
-          # recovery path here but a new tag (see "Fixing a bad release" in
-          # RELEASE.md). So existence is treated as done, not something to
-          # replace: no delete, ever, on this path. The tag itself belongs
-          # to the caller (verified to exist below via --verify-tag), so
-          # this only ever concerned the release object, never the tag.
+          # gh exits 1 whether the release is missing or the lookup failed,
+          # so only the exact "release not found" message means it's absent.
+          # An existing release is immutable and is left alone; a bad one
+          # needs a new tag (see "Fixing a bad release" in RELEASE.md).
           if view_output=$(gh release view "$TAG" 2>&1 >/dev/null); then
             echo "release for '$TAG' already exists; nothing to publish"
             url=$(gh release view "$TAG" --json url --jq '.url')

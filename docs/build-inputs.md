@@ -9,10 +9,10 @@ GitHub's build provenance records which caller workflow ran, but not the `workfl
 ```json
 {
   "inputs": { "bin": "release-note", "targets": "[\"x86_64-unknown-linux-musl\"]", "toolchain": "stable", "...": "..." },
-  "tools": { "cargo-auditable": "0.7.7", "syft": "v1.54.0" },
+  "tools": { "cargo-auditable": "0.7.7", "syft": "v1.54.1" },
   "targets": {
     "x86_64-unknown-linux-musl": {
-      "runner": { "image": "ubuntu24", "image-version": "20260928.1", "arch": "X64" },
+      "runner": { "image": "ubuntu26", "image-version": "20261005.1", "arch": "X64" },
       "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)\nbinary: rustc\n...",
       "zig": { "version": "0.17.0", "mirror": "https://zig.example/zig" },
       "cargo-zigbuild": "0.23.4"
