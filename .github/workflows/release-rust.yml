@@ -202,8 +202,8 @@ jobs:
             else . end
             | [ .[] | . as $t |
               { target: $t } +
-              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
-                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-24.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
+              ( { "x86_64-unknown-linux-musl":  { "runs-on": "ubuntu-26.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
+                  "aarch64-unknown-linux-musl": { "runs-on": "ubuntu-26.04", "zigbuild": true,  "allowed-endpoints": $zigbuild_endpoints, "zig-mirror": $zig_mirror },
                   "x86_64-apple-darwin":        { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common },
                   "aarch64-apple-darwin":       { "runs-on": "macos-15",     "zigbuild": false, "allowed-endpoints": $common }
                 }[$t] // error("unsupported target: \($t)") )

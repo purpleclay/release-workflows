@@ -136,18 +136,18 @@ jobs:
 
             def runner($t):
               if $cgo then
-                { "linux/amd64":  "ubuntu-24.04",
-                  "linux/arm64":  "ubuntu-24.04-arm",
+                { "linux/amd64":  "ubuntu-26.04",
+                  "linux/arm64":  "ubuntu-26.04-arm",
                   "darwin/amd64": "macos-15",
                   "darwin/arm64": "macos-15"
                 }[$t] // error("unsupported target with cgo enabled: \($t)")
               else
-                { "linux/amd64":   "ubuntu-24.04",
-                  "linux/arm64":   "ubuntu-24.04",
-                  "darwin/amd64":  "ubuntu-24.04",
-                  "darwin/arm64":  "ubuntu-24.04",
-                  "windows/amd64": "ubuntu-24.04",
-                  "windows/arm64": "ubuntu-24.04"
+                { "linux/amd64":   "ubuntu-26.04",
+                  "linux/arm64":   "ubuntu-26.04",
+                  "darwin/amd64":  "ubuntu-26.04",
+                  "darwin/arm64":  "ubuntu-26.04",
+                  "windows/amd64": "ubuntu-26.04",
+                  "windows/arm64": "ubuntu-26.04"
                 }[$t] // error("unsupported target: \($t)")
               end;
 
