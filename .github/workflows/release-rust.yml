@@ -70,7 +70,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           # Every host in .github/zig-mirrors.txt, so compose_build_matrix
@@ -220,7 +220,7 @@ jobs:
       build-inputs-aarch64-apple-darwin: ${{ steps.record.outputs.build-inputs-aarch64-apple-darwin }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: ${{ matrix.allowed-endpoints }}
@@ -429,7 +429,7 @@ jobs:
       attestations: write # publish the SBOM attestation to the repo
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -496,7 +496,7 @@ jobs:
       release-url: ${{ steps.publish.outputs.url }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
