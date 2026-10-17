@@ -58,6 +58,43 @@ with:
   # files that share a basename, fail the build.
   # Optional. Default is "LICENSE README.md"
   package-files:
+
+  # Pre-generated release note in markdown. When set, release note generation
+  # is skipped and this text becomes the release body, published as literal
+  # text.
+  # Optional. Default is "" (generate with release-note)
+  release-note:
+```
+
+To publish a note you generate yourself, produce it in an earlier job and pass it through a job output:
+
+```yaml
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      note: ${{ steps.note.outputs.note }}
+    steps:
+      # ... write the note to note.md, then:
+      - id: note
+        run: |
+          # Random delimiter, so a line in the note can't end it early.
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            echo "note<<${delim}"
+            printf '%s\n' "$(cat note.md)"
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: notes
+    uses: purpleclay/release-workflows/.github/workflows/release-rust.yml@<pinned-sha> # vX.Y.Z
+    # ... permissions as in Usage
+    with:
+      release-note: ${{ needs.notes.outputs.note }}
+      # ... other inputs
 ```
 
 ## Outputs

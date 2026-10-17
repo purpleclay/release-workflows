@@ -23,7 +23,7 @@ GitHub's build provenance records which caller workflow ran, but not the `workfl
 
 | Field | Meaning |
 | --- | --- |
-| `inputs` | The `inputs` context exactly as the workflow received it, with defaults applied and `vars.*` or job outputs already resolved. JSON-valued inputs such as `targets` stay strings. |
+| `inputs` | The `inputs` context as the workflow received it, with defaults applied and `vars.*` or job outputs already resolved. `release-note` is left out, as it doesn't affect the build. JSON-valued inputs such as `targets` stay strings. |
 | `tools` | Tool versions used on every target. Rust: `cargo-auditable`, `syft`. Go: `syft`. |
 | `targets.<target>.runner` | The hosted runner image (`ImageOS`, `ImageVersion`) and architecture (`RUNNER_ARCH`) that built the target. |
 | `targets.<target>.rustc` | Rust only. `rustc -Vv` output, captured in the checkout before any cargo command runs, so it reflects a `rust-toolchain.toml` override and caller code can't change it. |

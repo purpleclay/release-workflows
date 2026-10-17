@@ -57,6 +57,13 @@ on:
         type: string
         required: false
         default: LICENSE README.md
+      release-note:
+        description: >-
+          Pre-generated release note in markdown. When set, release note
+          generation is skipped and this text becomes the release body.
+        type: string
+        required: false
+        default: ""
     outputs:
       release-url:
         description: URL of the published release
@@ -501,7 +508,7 @@ jobs:
             --argjson matrix "$MATRIX" \
             --argjson outputs "$BUILD_OUTPUTS" \
             --arg syft "$SYFT_VERSION" '
-            { inputs: $inputs,
+            { inputs: ($inputs | del(.["release-note"])),
               tools: { syft: $syft },
               targets: (reduce $matrix[] as $m ({};
                 .[$m.target] = (
@@ -564,14 +571,27 @@ jobs:
 
       - name: release_note
         id: notes
+        if: ${{ inputs.release-note == '' }}
         uses: purpleclay/release-note-action@173903da3997acebdb2c04f3de707c7c4c1a283e # v0.3.1
+
+      # Through env, never inline in run: commit messages are untrusted.
+      - name: provided_release_note
+        id: provided
+        if: ${{ inputs.release-note != '' }}
+        env:
+          NOTE: ${{ inputs.release-note }}
+        run: |
+          set -euo pipefail
+          path="${RUNNER_TEMP}/release-note.md"
+          printf '%s' "$NOTE" > "$path"
+          echo "path=${path}" >> "$GITHUB_OUTPUT"
 
       - name: publish_release
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
+          NOTE_FILE: ${{ steps.notes.outputs.release-note-path || steps.provided.outputs.path }}
         run: |
           set -euo pipefail
           # gh exits 1 whether the release is missing or the lookup failed,
