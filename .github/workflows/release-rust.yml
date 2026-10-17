@@ -487,11 +487,63 @@ jobs:
           subject-path: ${{ steps.locate.outputs.archive }}
           sbom-path: ${{ steps.locate.outputs.sbom }}
 
+  # Kept out of provenance so release-note never runs in a job that can
+  # request an OIDC token. Skipped when the caller supplies its own note.
+  release_note:
+    name: release_note
+    needs: plan
+    if: ${{ inputs.release-note == '' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      note: ${{ steps.output.outputs.note }}
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            release-assets.githubusercontent.com:443
+            tmaproduction.blob.core.windows.net:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: generate_release_note
+        id: notes
+        uses: purpleclay/release-note-action@173903da3997acebdb2c04f3de707c7c4c1a283e # v0.3.1
+
+      # Random delimiter, so a line in the note can't end the output early.
+      - name: output_release_note
+        id: output
+        env:
+          NOTE_FILE: ${{ steps.notes.outputs.release-note-path }}
+        run: |
+          set -euo pipefail
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            echo "note<<${delim}"
+            printf '%s\n' "$(cat "$NOTE_FILE")"
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+
   provenance:
     name: attest_and_publish
     # Waits for every SBOM attestation. Releases are immutable, so one must
     # never publish without them.
-    needs: [plan, build, attest_sbom]
+    # release_note is skipped when the caller supplies a note, and a skipped
+    # dependency would skip this job too, so check for failures explicitly.
+    needs: [plan, build, attest_sbom, release_note]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
@@ -516,12 +568,6 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
             uploads.github.com:443
-
-      - name: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
 
       - name: collect_artifact_ids
         id: artifacts
@@ -618,19 +664,17 @@ jobs:
             verify "$archive" --predicate-type https://spdx.dev/Document
           done
 
-      - name: release_note
-        id: notes
-        if: ${{ inputs.release-note == '' }}
-        uses: purpleclay/release-note-action@173903da3997acebdb2c04f3de707c7c4c1a283e # v0.3.1
-
       # Through env, never inline in run: commit messages are untrusted.
-      - name: provided_release_note
-        id: provided
-        if: ${{ inputs.release-note != '' }}
+      - name: write_release_note
+        id: note
         env:
-          NOTE: ${{ inputs.release-note }}
+          NOTE: ${{ inputs.release-note || needs.release_note.outputs.note }}
         run: |
           set -euo pipefail
+          if [ -z "$NOTE" ]; then
+            echo "::error::no release note was supplied or generated"
+            exit 1
+          fi
           path="${RUNNER_TEMP}/release-note.md"
           printf '%s' "$NOTE" > "$path"
           echo "path=${path}" >> "$GITHUB_OUTPUT"
@@ -640,7 +684,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          NOTE_FILE: ${{ steps.notes.outputs.release-note-path || steps.provided.outputs.path }}
+          GH_REPO: ${{ github.repository }}
+          NOTE_FILE: ${{ steps.note.outputs.path }}
         run: |
           set -euo pipefail
           # gh exits 1 whether the release is missing or the lookup failed,
