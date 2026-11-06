@@ -56,7 +56,7 @@ env:
   # review it like code. ZIG_VERSION uses the Codeberg manager in
   # .github/renovate.json, because GitHub's ziglang/zig mirror is stale.
   # renovate: depName=ziglang/zig
-  ZIG_VERSION: "0.17.0"
+  ZIG_VERSION: "0.17.1"
   # renovate: datasource=github-tags depName=rust-cross/cargo-zigbuild versioning=semver
   ZIGBUILD_VERSION: "0.24.1"
   # renovate: datasource=github-releases depName=anchore/syft
