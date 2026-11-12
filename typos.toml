@@ -10,3 +10,5 @@ extend-exclude = [".github/zig-mirrors.txt"]
 # that's a real code file). Keep in sync with zig-mirrors.txt.
 ist = "ist"
 squirl = "squirl"
+# in-toto attestation file extension (.intoto.jsonl).
+intoto = "intoto"
