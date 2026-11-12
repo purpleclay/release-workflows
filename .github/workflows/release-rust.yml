@@ -47,7 +47,7 @@ on:
     outputs:
       release-url:
         description: URL of the published release
-        value: ${{ jobs.provenance.outputs.release-url }}
+        value: ${{ jobs.provenance.outputs.release-url || jobs.plan.outputs.release-url }}
 
 permissions: {}
 
@@ -72,18 +72,23 @@ jobs:
     name: plan_build_matrix
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read # look up an existing release for the tag
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      released: ${{ steps.release.outputs.released }}
+      release-url: ${{ steps.release.outputs.url }}
     steps:
       - name: harden_runner
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: block
-          # Every host in .github/zig-mirrors.txt, so compose_build_matrix
-          # can probe them. This step runs before checkout, so the list
-          # can't be read from that file. Keep the two in sync by hand.
+          # The GitHub API, to check for an existing release, and every host in
+          # .github/zig-mirrors.txt, so compose_build_matrix can probe them.
+          # This step runs before checkout, so the list can't be read from that
+          # file. Keep the two in sync by hand.
           allowed-endpoints: >
+            api.github.com:443
             github.com:443
             ziglang.org:443
             fs.liujiacai.net:443
@@ -127,8 +132,41 @@ jobs:
             exit 1
           fi
 
+      # A re-run for a released tag would rebuild and sign binaries that
+      # never get published, so stop before building. Match the HTTP status,
+      # not gh's error wording, which isn't a stable interface.
+      - name: check_existing_release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Encode the tag, so "#", "?" or "/" in it can't change the path.
+          tag_path=$(jq -rn --arg t "$TAG" '$t | @uri')
+          response=$(gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${tag_path}" 2>/dev/null) || true
+          # From the variable, not head: head can close the pipe early on a
+          # long response, and pipefail would fail the step.
+          status_line=${response%%$'\n'*}
+          status=$(awk '{print $2}' <<<"$status_line")
+          case "$status" in
+            200)
+              echo "::notice::a release for '${TAG}' already exists, so nothing will be built or published"
+              echo "released=true" >> "$GITHUB_OUTPUT"
+              printf '%s\n' "$response" | sed '1,/^\r\?$/d' | jq -r '"url=\(.html_url)"' >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "released=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::could not check whether a release for '${TAG}' exists (HTTP ${status:-unknown})"
+              exit 1
+              ;;
+          esac
+
       - name: compose_build_matrix
         id: plan
+        if: ${{ steps.release.outputs.released != 'true' }}
         env:
           TARGETS: ${{ inputs.targets }}
         run: |
@@ -203,6 +241,7 @@ jobs:
 
   build:
     needs: plan
+    if: ${{ needs.plan.outputs.released != 'true' }}
     name: build / ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -492,7 +531,7 @@ jobs:
   release_note:
     name: release_note
     needs: plan
-    if: ${{ inputs.release-note == '' }}
+    if: ${{ inputs.release-note == '' && needs.plan.outputs.released != 'true' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -543,7 +582,7 @@ jobs:
     # release_note is skipped when the caller supplies a note, and a skipped
     # dependency would skip this job too, so check for failures explicitly.
     needs: [plan, build, attest_sbom, release_note]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    if: ${{ needs.plan.outputs.released != 'true' && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     environment: ${{ inputs.environment }}
