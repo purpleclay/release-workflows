@@ -626,6 +626,7 @@ jobs:
           sha256sum -- * > checksums.txt
 
       - name: attest_build_provenance
+        id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           # Every asset, including checksums.txt and the SBOMs.
@@ -663,6 +664,19 @@ jobs:
           for archive in dist/*.tar.gz; do
             verify "$archive" --predicate-type https://spdx.dev/Document
           done
+
+      # Added after verify_attestations, which checks every file in dist/, as
+      # the bundle isn't itself attested. Not in checksums.txt either: that
+      # file is an attestation subject, so it can't list the bundle signing it.
+      # .intoto.jsonl is the extension Scorecard credits as provenance.
+      - name: add_provenance_asset
+        env:
+          BIN: ${{ inputs.bin }}
+          VERSION: ${{ github.ref_name }}
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp -- "$BUNDLE" "dist/${BIN}-${VERSION//\//-}.intoto.jsonl"
 
       # Through env, never inline in run: commit messages are untrusted.
       - name: write_release_note
