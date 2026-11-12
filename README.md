@@ -29,10 +29,11 @@ A project delegates its release with a single `uses:` call. Every stage then run
 
 Pick a workflow and follow its caller contract. Each contract is the single source of truth for that workflow: usage, inputs, outputs, supported targets, archive naming, attestation subjects, an adoption checklist, and how consumers verify what was produced. Contracts change only under the versioning rules in [RELEASE.md](RELEASE.md).
 
-| Workflow                                             | Builds        | Example tag | Caller contract                                                                                                                                          |
-| :--------------------------------------------------- | :------------ | :---------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`release-rust`](.github/workflows/release-rust.yml) | Rust binaries | `1.2.3`     | [Usage](docs/release-rust.md#usage) · [Adopting](docs/release-rust.md#adoption-checklist) · [Verifying](docs/release-rust.md#verifying-what-it-produced) |
-| [`release-go`](.github/workflows/release-go.yml)     | Go binaries   | `v1.2.3`    | [Usage](docs/release-go.md#usage) · [Adopting](docs/release-go.md#adoption-checklist) · [Verifying](docs/release-go.md#verifying-what-it-produced)       |
+| Workflow                                                       | Builds           | Example tag | Caller contract                                                                                                                                                         |
+| :------------------------------------------------------------- | :--------------- | :---------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`release-rust`](.github/workflows/release-rust.yml)           | Rust binaries    | `1.2.3`     | [Usage](docs/release-rust.md#usage) · [Adopting](docs/release-rust.md#adoption-checklist) · [Verifying](docs/release-rust.md#verifying-what-it-produced)                |
+| [`release-go`](.github/workflows/release-go.yml)               | Go binaries      | `v1.2.3`    | [Usage](docs/release-go.md#usage) · [Adopting](docs/release-go.md#adoption-checklist) · [Verifying](docs/release-go.md#verifying-what-it-produced)                      |
+| [`release-container`](.github/workflows/release-container.yml) | Container images | `v1.2.3`    | [Usage](docs/release-container.md#usage) · [Adopting](docs/release-container.md#adoption-checklist) · [Verifying](docs/release-container.md#verifying-what-it-produced) |
 
 > [!IMPORTANT]
 > **Pin the full commit SHA**, with the version as a trailing comment, so Renovate or Dependabot can propose bumps. There are no floating major tags here, by design.
