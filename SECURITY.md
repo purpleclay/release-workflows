@@ -30,6 +30,6 @@ Only the latest release receives fixes. Consumers pin full commit SHAs and track
 
 ## Verifying what you consume
 
-Every artifact these workflows produce carries verifiable provenance. The commands are in each workflow's contract: [release-rust](docs/release-rust.md#verifying-what-it-produced) and [release-go](docs/release-go.md#verifying-what-it-produced).
+Every artifact these workflows produce carries verifiable provenance. The commands are in each workflow's contract: [release-rust](docs/release-rust.md#verifying-what-it-produced), [release-go](docs/release-go.md#verifying-what-it-produced) and [release-container](docs/release-container.md#verifying-what-it-produced).
 
 If an artifact claiming to come from this pipeline fails verification, treat that as a security report in itself.

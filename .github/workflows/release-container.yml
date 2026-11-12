@@ -1,0 +1,521 @@
+name: release-container
+on:
+  workflow_call:
+    inputs:
+      bin:
+        description: >-
+          Binary to put in the image, taken from the release for the tag that
+          triggered the run.
+        type: string
+        required: true
+      built-by:
+        description: >-
+          Workflow that released bin: release-go or release-rust. Its
+          attestations must verify before the binary is used.
+        type: string
+        required: true
+      platforms:
+        description: >-
+          JSON array of image platforms. Supported: linux/amd64 and
+          linux/arm64.
+        type: string
+        required: false
+        default: '["linux/amd64","linux/arm64"]'
+      apko-config:
+        description: >-
+          Path to an apko config listing the Wolfi packages the image needs,
+          with its apko.lock.json beside it. Empty builds on scratch, which
+          only suits static binaries.
+        type: string
+        required: false
+        default: ""
+      include:
+        description: >-
+          JSON array of binaries from other release-workflows releases, e.g.
+          [{"repo":"purpleclay/gpg-import","tag":"0.13.0","bin":"gpg-import","built-by":"release-rust"}].
+          Each is verified against its own release before it is added.
+        type: string
+        required: false
+        default: "[]"
+      scripts:
+        description: >-
+          Space-separated list of files, relative to the repository root,
+          added to /usr/bin with mode 0755, e.g. an entrypoint script.
+        type: string
+        required: false
+        default: ""
+      entrypoint:
+        description: >-
+          JSON array for the image entrypoint. Empty uses ["/usr/bin/<bin>"].
+        type: string
+        required: false
+        default: ""
+      cmd:
+        description: JSON array for the image cmd. Empty sets none.
+        type: string
+        required: false
+        default: ""
+      environment:
+        description: >-
+          GitHub environment the publish job runs under. GitHub creates a
+          missing environment without protection, so add a required reviewer
+          in each repo.
+        type: string
+        required: false
+        default: release
+    outputs:
+      image:
+        description: Image name, without a tag or digest
+        value: ${{ jobs.publish.outputs.image }}
+      digest:
+        description: Digest of the published image index
+        value: ${{ jobs.publish.outputs.digest }}
+
+permissions: {}
+
+env:
+  # Tool pins. A bump changes release security for every caller, so review
+  # it like code. Neither project attests its release assets, so each pin
+  # carries a SHA-256: a Renovate bump fails closed until the checksum in the
+  # same PR is updated from the release's checksums.txt.
+  # renovate: datasource=github-releases depName=chainguard-dev/apko
+  APKO_VERSION: "v1.4.18"
+  APKO_SHA256: 80d3b39ada69f51c82fcd1e04719eda9d12d4333fd46d31d7d7c9c2d0cdcd0b9
+  # renovate: datasource=github-releases depName=google/go-containerregistry
+  CRANE_VERSION: "v0.22.1"
+  CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+
+jobs:
+  # Checks every input before anything is downloaded or built. The apko
+  # config may only name Wolfi, so the assemble job's egress allowlist holds
+  # for every caller.
+  plan:
+    name: plan_image
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # read the apko config and scripts
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
+      - name: require_tag_ref
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "::error::release-container must be triggered from a tag push (got ref_type='${REF_TYPE}', ref_name='${REF_NAME}'), as the image is built from that tag's release"
+            exit 1
+          fi
+
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: compose_plan
+        id: plan
+        env:
+          BIN: ${{ inputs.bin }}
+          BUILT_BY: ${{ inputs.built-by }}
+          PLATFORMS: ${{ inputs.platforms }}
+          APKO_CONFIG: ${{ inputs.apko-config }}
+          INCLUDE: ${{ inputs.include }}
+          SCRIPTS: ${{ inputs.scripts }}
+          ENTRYPOINT: ${{ inputs.entrypoint }}
+          CMD: ${{ inputs.cmd }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          # The image tag is the release tag with "/" replaced, matching the
+          # archive names. OCI tags allow a narrower set than git tags.
+          image_tag=${TAG//\//-}
+          [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+            || fail "tag '${TAG}' can't be used as an image tag"
+
+          name_re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+          [[ "$BIN" =~ $name_re ]] || fail "bin must be a plain file name (got '${BIN}')"
+          case "$BUILT_BY" in
+            release-go|release-rust) ;;
+            *) fail "built-by must be release-go or release-rust (got '${BUILT_BY}')" ;;
+          esac
+
+          # Each binary carries the archive suffix for every platform, so the
+          # assemble job never rebuilds a file name.
+          if ! platforms=$(jq -c '
+            def arch($p):
+              { "linux/amd64": { apko: "x86_64",  go: "linux-amd64", rust: "x86_64-unknown-linux-musl" },
+                "linux/arm64": { apko: "aarch64", go: "linux-arm64", rust: "aarch64-unknown-linux-musl" }
+              }[$p] // error("unsupported platform: \($p)");
+            if type != "array" or length == 0 or any(.[]; type != "string") then
+              error("platforms must be a non-empty JSON array of strings")
+            elif length != (unique | length) then
+              error("platforms must not contain duplicate entries")
+            else [ .[] | { platform: . } + arch(.) ] end' <<<"$PLATFORMS"); then
+            fail "release-container supports: linux/amd64, linux/arm64"
+          fi
+
+          if ! binaries=$(jq -c --arg bin "$BIN" --arg built_by "$BUILT_BY" --arg tag "$TAG" --arg repo "$GITHUB_REPOSITORY" '
+            if type != "array" then error("include must be a JSON array") else . end
+            | [ { repo: $repo, tag: $tag, bin: $bin, "built-by": $built_by } ] + .
+            | map(
+                if type != "object" then error("each include entry must be an object") else . end
+                | if (.repo | type) != "string" or (.repo | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not) then error("include repo must be owner/name: \(.repo)")
+                  elif (.tag | type) != "string" or .tag == "" then error("include tag must be a non-empty string")
+                  elif (.bin | type) != "string" or (.bin | test("^[A-Za-z0-9][A-Za-z0-9._-]*$") | not) then error("include bin must be a plain file name: \(.bin)")
+                  elif (.["built-by"] | IN("release-go", "release-rust") | not) then error("include built-by must be release-go or release-rust: \(.["built-by"])")
+                  else { repo, tag, bin, "built-by" } end)
+            | if (map(.bin) | length) != (map(.bin) | unique | length) then error("binary names must be unique") else . end
+            ' <<<"$INCLUDE"); then
+            fail "include is invalid; see the error above"
+          fi
+
+          # Repository files only, never a path outside the checkout.
+          workspace=$(realpath -e -- "$GITHUB_WORKSPACE")
+          scripts='[]'
+          for s in $SCRIPTS; do
+            resolved=$(realpath -e -- "$s" 2>/dev/null) || fail "script '${s}' does not exist"
+            case "$resolved" in
+              "$workspace"/*) ;;
+              *) fail "script '${s}' is outside the repository" ;;
+            esac
+            [ -f "$resolved" ] || fail "script '${s}' is not a regular file"
+            scripts=$(jq -c --arg p "${resolved#"$workspace"/}" '. + [$p]' <<<"$scripts")
+          done
+          jq -e --argjson b "$binaries" '
+            (map(split("/")[-1]) + ($b | map(.bin))) as $names
+            | ($names | length) == ($names | unique | length)' <<<"$scripts" >/dev/null \
+            || fail "every script and binary needs a distinct file name, as all go in /usr/bin"
+
+          for v in ENTRYPOINT CMD; do
+            [ -z "${!v}" ] && continue
+            jq -e 'type == "array" and length > 0 and all(.[]; type == "string")' <<<"${!v}" >/dev/null 2>&1 \
+              || fail "${v,,} must be a non-empty JSON array of strings"
+          done
+          entrypoint=${ENTRYPOINT:-$(jq -cn --arg b "$BIN" '["/usr/bin/" + $b]')}
+          cmd=${CMD:-[]}
+
+          lock=""
+          if [ -n "$APKO_CONFIG" ]; then
+            [ -f "$APKO_CONFIG" ] || fail "apko-config '${APKO_CONFIG}' does not exist"
+            # apko lock writes <config>.lock.json, minus the .yaml extension.
+            lock="${APKO_CONFIG%.*}.lock.json"
+            [ -f "$lock" ] || fail "no lock file at '${lock}'; run apko lock ${APKO_CONFIG}"
+            wolfi=https://packages.wolfi.dev/os
+            yq -o=json '.' "$APKO_CONFIG" | jq -e --arg w "$wolfi" '
+              (.contents.repositories == [$w])
+              and (.contents.keyring == [$w + "/wolfi-signing.rsa.pub"])
+              and (has("include") | not)
+              and (.contents | has("baseimage") | not)' >/dev/null \
+              || fail "apko-config may only list ${wolfi} as its repository and its signing key as the keyring, with no include or baseimage"
+            jq -e --arg w "$wolfi/" '
+              all(.contents.repositories[]; .url | startswith($w))
+              and all(.contents.packages[]; .url | startswith($w))' "$lock" >/dev/null \
+              || fail "every repository and package in '${lock}' must come from ${wolfi}"
+            missing=$(jq -r --slurpfile lock "$lock" '
+              [ .[].apko ] - [ $lock[0].contents.packages[].architecture ] | join(", ")' <<<"$platforms")
+            [ -z "$missing" ] || fail "'${lock}' has no packages for ${missing}; add the arch to apko-config and re-lock"
+          fi
+
+          plan=$(jq -cn \
+            --arg image "ghcr.io/${GITHUB_REPOSITORY,,}" \
+            --arg tag "$image_tag" \
+            --arg config "$APKO_CONFIG" \
+            --arg lock "$lock" \
+            --argjson platforms "$platforms" \
+            --argjson binaries "$binaries" \
+            --argjson scripts "$scripts" \
+            --argjson entrypoint "$entrypoint" \
+            --argjson cmd "$cmd" '
+            { image: $image, tag: $tag, platforms: $platforms, binaries: $binaries,
+              scripts: $scripts, entrypoint: $entrypoint, cmd: $cmd,
+              apko: (if $config == "" then null else { config: $config, lock: $lock } end) }')
+          echo "plan=${plan}" >> "$GITHUB_OUTPUT"
+          jq . <<<"$plan"
+
+  # Assembles the image without credentials. No step here can sign or push:
+  # the result leaves as an OCI layout artifact.
+  assemble:
+    name: assemble_image
+    needs: plan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout, download release assets
+    outputs:
+      digest: ${{ steps.assemble.outputs.digest }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: block
+          # GitHub releases and attestations for the binaries, Sigstore's
+          # trust root to verify them, and Wolfi for the packages.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            packages.wolfi.dev:443
+            release-assets.githubusercontent.com:443
+            tmaproduction.blob.core.windows.net:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install_tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo apko.tgz "https://github.com/chainguard-dev/apko/releases/download/${APKO_VERSION}/apko_${APKO_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo crane.tgz "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          printf '%s  apko.tgz\n%s  crane.tgz\n' "$APKO_SHA256" "$CRANE_SHA256" | sha256sum -c -
+          tar -xzf apko.tgz --strip-components=1 -C bin "apko_${APKO_VERSION#v}_linux_amd64/apko"
+          tar -xzf crane.tgz -C bin crane
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Every archive must verify against the workflow that released it
+      # before anything is taken from it, so the image chains to the
+      # binaries' own provenance.
+      - name: download_and_verify_binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.plan.outputs.plan }}
+          SIGNER_REPO: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/archives"
+          jq -c '.binaries[]' <<<"$PLAN" | while read -r b; do
+            repo=$(jq -r .repo <<<"$b"); tag=$(jq -r .tag <<<"$b")
+            bin=$(jq -r .bin <<<"$b"); built_by=$(jq -r '.["built-by"]' <<<"$b")
+            jq -c '.platforms[]' <<<"$PLAN" | while read -r p; do
+              suffix=$(jq -r --arg k "${built_by#release-}" '.[$k]' <<<"$p")
+              archive="${bin}-${tag//\//-}-${suffix}.tar.gz"
+              gh release download "$tag" -R "$repo" -p "$archive" -D "$RUNNER_TEMP/archives"
+              gh attestation verify "$RUNNER_TEMP/archives/${archive}" \
+                --repo "$repo" \
+                --signer-workflow "${SIGNER_REPO}/.github/workflows/${built_by}.yml" \
+                --source-ref "refs/tags/${tag}" \
+                --deny-self-hosted-runners
+            done
+          done
+
+      # Built in crane's in-memory registry on the runner. Layers have a
+      # fixed owner and mtime, so the same inputs give the same digest.
+      - name: assemble_image
+        id: assemble
+        env:
+          PLAN: ${{ needs.plan.outputs.plan }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          crane registry serve --address localhost:5000 > "$RUNNER_TEMP/registry.log" 2>&1 &
+          for _ in $(seq 20); do curl -fs localhost:5000/v2/ >/dev/null && break; sleep 0.5; done
+          local_ref=localhost:5000/image
+          archives="$RUNNER_TEMP/archives"
+
+          base=""
+          if [ "$(jq -r '.apko != null' <<<"$PLAN")" = true ]; then
+            archs=$(jq -r '[.platforms[].apko] | join(",")' <<<"$PLAN")
+            apko publish "$(jq -r .apko.config <<<"$PLAN")" "${local_ref}:base" \
+              --lockfile "$(jq -r .apko.lock <<<"$PLAN")" \
+              --arch "$archs" \
+              --sbom=false > "$RUNNER_TEMP/base.ref"
+            base=$(tail -n1 "$RUNNER_TEMP/base.ref")
+            echo "apko base: ${base}"
+          fi
+
+          manifests=()
+          while read -r p; do
+            platform=$(jq -r .platform <<<"$p")
+            key=$(jq -r .go <<<"$p")
+            root="$RUNNER_TEMP/root-${key}"
+            mkdir -p "${root}/usr/bin"
+
+            while read -r b; do
+              bin=$(jq -r .bin <<<"$b"); tag=$(jq -r .tag <<<"$b")
+              suffix=$(jq -r --arg k "$(jq -r '.["built-by"] | ltrimstr("release-")' <<<"$b")" '.[$k]' <<<"$p")
+              unpack=$(mktemp -d)
+              tar -xzf "${archives}/${bin}-${tag//\//-}-${suffix}.tar.gz" -C "$unpack"
+              if [ ! -f "${unpack}/${bin}" ] || [ -L "${unpack}/${bin}" ]; then
+                echo "::error::${bin} is not a regular file in its ${platform} archive"
+                exit 1
+              fi
+              install -m 0755 "${unpack}/${bin}" "${root}/usr/bin/${bin}"
+            done < <(jq -c '.binaries[]' <<<"$PLAN")
+            while read -r s; do
+              install -m 0755 "$s" "${root}/usr/bin/$(basename "$s")"
+            done < <(jq -r '.scripts[]' <<<"$PLAN")
+
+            tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              -C "$root" -cf "${root}.tar" usr
+
+            ref="${local_ref}:${key}"
+            if [ -n "$base" ]; then
+              crane append --insecure --platform "$platform" -b "$base" -f "${root}.tar" -t "$ref"
+            else
+              # scratch has no user or platform, so set both. 65532 matches
+              # the nonroot user in Wolfi images.
+              crane append --insecure --oci-empty-base -f "${root}.tar" -t "$ref"
+              crane mutate --insecure "$ref" --set-platform "$platform" --user 65532:65532 -t "$ref"
+            fi
+            # crane parses these flags as CSV, so quote each element to keep
+            # commas and quotes inside an argument.
+            mutate=(--entrypoint "$(jq -r '.entrypoint | @csv' <<<"$PLAN")")
+            if [ "$(jq '.cmd | length' <<<"$PLAN")" -gt 0 ]; then
+              mutate+=(--cmd "$(jq -r '.cmd | @csv' <<<"$PLAN")")
+            fi
+            crane mutate --insecure "$ref" "${mutate[@]}" \
+              -l "org.opencontainers.image.source=${SOURCE_URL}" \
+              -l "org.opencontainers.image.revision=${REVISION}" \
+              -l "org.opencontainers.image.version=${VERSION}" \
+              -t "$ref"
+            manifests+=(-m "$ref")
+          done < <(jq -c '.platforms[]' <<<"$PLAN")
+
+          crane index append --insecure "${manifests[@]}" -t "${local_ref}:index"
+          digest=$(crane digest --insecure "${local_ref}:index")
+          crane pull --insecure --format oci "${local_ref}@${digest}" "$RUNNER_TEMP/layout"
+          tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/image.tar" layout
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          crane manifest --insecure "${local_ref}@${digest}" | jq .
+
+      - name: upload_image
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # Prefixed with bin, so two calls in one caller run can't collide.
+          name: image-${{ inputs.bin }}
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # Pushes and attests the index. Downloads the artifact by id, so a caller
+  # job replacing it fails closed, and pushes only if its digest matches the
+  # one assemble reported.
+  publish:
+    name: publish_image
+    needs: [plan, assemble]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    permissions:
+      packages: write # push the image to GHCR
+      id-token: write # sigstore keyless signing for image provenance (SLSA L3)
+      attestations: write # persist the image attestation
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: harden_runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            ghcr.io:443
+            github.com:443
+            pkg-containers.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            tmaproduction.blob.core.windows.net:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+
+      - name: install_crane
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo crane.tgz "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          printf '%s  crane.tgz\n' "$CRANE_SHA256" | sha256sum -c -
+          tar -xzf crane.tgz -C bin crane
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: download_image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.assemble.outputs.artifact-id }}
+          path: ${{ runner.temp }}
+
+      - name: push_image
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.plan.outputs.plan }}
+          DIGEST: ${{ needs.assemble.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/image.tar"
+          layout="$RUNNER_TEMP/layout"
+          # The layout's single entry is the index assemble built.
+          found=$(jq -r '[.manifests[].digest] | if length == 1 then .[0] else "" end' "${layout}/index.json")
+          if [ "$found" != "$DIGEST" ]; then
+            echo "::error::artifact holds ${found:-more than one image}, but assemble reported ${DIGEST}"
+            exit 1
+          fi
+
+          image=$(jq -r .image <<<"$PLAN")
+          ref="${image}:$(jq -r .tag <<<"$PLAN")"
+          crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<<"$GH_TOKEN"
+          # shortcut: GHCR rejected a manifest on the first push to a new
+          # package in testing; retried, as pushes are content-addressed.
+          for attempt in 1 2 3; do
+            crane push "$layout" "$ref" && break
+            [ "$attempt" -eq 3 ] && exit 1
+            echo "::warning::push attempt ${attempt} failed, retrying"
+            sleep 5
+          done
+          pushed=$(crane digest "$ref")
+          if [ "$pushed" != "$DIGEST" ]; then
+            echo "::error::${ref} resolves to ${pushed}, expected ${DIGEST}"
+            exit 1
+          fi
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: attest_image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # Runs the documented verify command, from both the attestation API and
+      # the registry, before the run reports success.
+      - name: verify_attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUBJECT: oci://${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/.github/workflows/release-container.yml
+          SIGNER_DIGEST: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          for source in api registry; do
+            extra=()
+            [ "$source" = registry ] && extra=(--bundle-from-oci)
+            gh attestation verify "$SUBJECT" "${extra[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" \
+              --signer-digest "$SIGNER_DIGEST" \
+              --source-ref "$GITHUB_REF" \
+              --deny-self-hosted-runners
+          done

@@ -3,7 +3,10 @@
   "extends": ["github>purpleclay/renovate-config"],
   "packageRules": [
     {
-      "matchFileNames": [".github/workflows/release-rust.yml"],
+      "matchFileNames": [
+        ".github/workflows/release-rust.yml",
+        ".github/workflows/release-container.yml"
+      ],
       "semanticCommitType": "fix",
       "semanticCommitScope": "deps"
     }
