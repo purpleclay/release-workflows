@@ -35,5 +35,7 @@ Pick a workflow and follow its caller contract. Each contract is the single sour
 | [`release-go`](.github/workflows/release-go.yml)               | Go binaries      | `v1.2.3`    | [Usage](docs/release-go.md#usage) · [Adopting](docs/release-go.md#adoption-checklist) · [Verifying](docs/release-go.md#verifying-what-it-produced)                      |
 | [`release-container`](.github/workflows/release-container.yml) | Container images | `v1.2.3`    | [Usage](docs/release-container.md#usage) · [Adopting](docs/release-container.md#adoption-checklist) · [Verifying](docs/release-container.md#verifying-what-it-produced) |
 
+[`apko-lock`](.github/workflows/apko-lock.yml) supports `release-container`. Run it on a schedule and it opens a PR whenever the image's Wolfi packages have updates. See its [caller contract](docs/apko-lock.md).
+
 > [!IMPORTANT]
 > **Pin the full commit SHA**, with the version as a trailing comment, so Renovate or Dependabot can propose bumps. There are no floating major tags here, by design.
