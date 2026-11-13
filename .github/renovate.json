@@ -5,7 +5,8 @@
     {
       "matchFileNames": [
         ".github/workflows/release-rust.yml",
-        ".github/workflows/release-container.yml"
+        ".github/workflows/release-container.yml",
+        ".github/workflows/apko-lock.yml"
       ],
       "semanticCommitType": "fix",
       "semanticCommitScope": "deps"

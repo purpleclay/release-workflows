@@ -77,7 +77,8 @@ env:
   # Tool pins. A bump changes release security for every caller, so review
   # it like code. Neither project attests its release assets, so each pin
   # carries a SHA-256: a Renovate bump fails closed until the checksum in the
-  # same PR is updated from the release's checksums.txt.
+  # same PR is updated from the release's checksums.txt. apko-lock.yml pins
+  # the same apko, so update its checksum in the same PR.
   # renovate: datasource=github-releases depName=chainguard-dev/apko
   APKO_VERSION: "v1.4.18"
   APKO_SHA256: 80d3b39ada69f51c82fcd1e04719eda9d12d4333fd46d31d7d7c9c2d0cdcd0b9
