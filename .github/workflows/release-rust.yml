@@ -80,7 +80,7 @@ jobs:
       release-url: ${{ steps.release.outputs.url }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           # The GitHub API, to check for an existing release, and every host in
@@ -266,7 +266,7 @@ jobs:
       build-inputs-aarch64-apple-darwin: ${{ steps.record.outputs.build-inputs-aarch64-apple-darwin }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           allowed-endpoints: ${{ matrix.allowed-endpoints }}
@@ -475,7 +475,7 @@ jobs:
       attestations: write # publish the SBOM attestation to the repo
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -540,7 +540,7 @@ jobs:
       note: ${{ steps.output.outputs.note }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -594,7 +594,7 @@ jobs:
       release-url: ${{ steps.publish.outputs.url }}
     steps:
       - name: harden_runner
-        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: block
           allowed-endpoints: >
