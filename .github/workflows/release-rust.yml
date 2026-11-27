@@ -306,7 +306,7 @@ jobs:
           printf 'build-inputs-%s=%s\n' "$TARGET" "$facts" >> "$GITHUB_OUTPUT"
 
       - name: install_cargo_auditable
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
         with:
           # Every leg: Syft reads the dependency data it embeds.
           tool: cargo-auditable@${{ env.CARGO_AUDITABLE_VERSION }}
@@ -324,7 +324,7 @@ jobs:
 
       - name: install_cargo_zigbuild
         if: ${{ matrix.zigbuild }}
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
         with:
           # Checksum-verified prebuilt binary. Without @version it floats to
           # the latest release.
